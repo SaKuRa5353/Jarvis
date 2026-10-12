@@ -1,27 +1,25 @@
 """
 Jarvis — голосовой ассистент.
 
-Цикл: wakeword → запись с VAD → STT → план → TTS → выполнение.
+Цикл: wakeword → запись с VAD → STT → план → TTS (Piper) → выполнение.
 """
 
-import asyncio
-import os
 import subprocess
 import time
 import warnings
+import wave
 from pathlib import Path
 
 import numpy as np
 import sounddevice as sd
 import onnxruntime as ort
 import speech_recognition as sr
-import edge_tts
 from openwakeword.model import Model
+from piper import PiperVoice
 
 
 # ──────────────────────── ПОДАВЛЕНИЕ ШУМА ────────────────────────
 
-# Скрываем warning про CUDAExecutionProvider (у нас CPU)
 warnings.filterwarnings("ignore", category=UserWarning, module="onnxruntime")
 
 
@@ -31,25 +29,36 @@ SAMPLE_RATE = 16000
 DEVICE = 4                          # USB Audio CODEC
 WAKE_MODEL = "models/hey_jarvis_v0.1.onnx"
 VAD_MODEL = "models/silero_vad.onnx"
+PIPER_MODEL = "models/piper/ru_RU-ruslan-medium.onnx"
 
-WAKE_THRESHOLD = 0.35
+WAKE_THRESHOLD = 0.42
 WAKE_COOLDOWN = 2.0
 
-VAD_FRAME = 512                     # 32 мс при 16 kHz
-VAD_SPEECH_THRESHOLD = 0.5          # порог "это речь"
-VAD_SILENCE_THRESHOLD = 0.4         # порог "это тишина" (было 0.35)
-VAD_MIN_SILENCE_SEC = 0.8           # сколько тишины до конца фразы
-VAD_MAX_RECORD_SEC = 6              # было 10
-VAD_MIN_SPEECH_SEC = 0.3            # отсекаем короткие шумы
+VAD_FRAME = 512
+VAD_SPEECH_THRESHOLD = 0.5
+VAD_SILENCE_THRESHOLD = 0.4
+VAD_MIN_SILENCE_SEC = 0.8
+VAD_MAX_RECORD_SEC = 6
+VAD_MIN_SPEECH_SEC = 0.3
 
-TTS_VOICE = "ru-RU-DmitryNeural"
-TTS_FILE = Path("/tmp/jarvis_tts.mp3")
+TTS_WAV = Path("/tmp/jarvis_tts.wav")
 
 
 # ──────────────────────── МОДЕЛИ ────────────────────────
 
 wake_model = Model(wakeword_model_paths=[WAKE_MODEL])
 vad_session = ort.InferenceSession(VAD_MODEL, providers=["CPUExecutionProvider"])
+
+_piper_voice = None
+
+
+def _get_piper_voice() -> PiperVoice:
+    """Ленивая загрузка Piper — только при первом обращении."""
+    global _piper_voice
+    if _piper_voice is None:
+        print("[TTS] Загружаю Piper...")
+        _piper_voice = PiperVoice.load(PIPER_MODEL)
+    return _piper_voice
 
 
 # ──────────────────────── WAKE WORD ────────────────────────
@@ -104,7 +113,6 @@ def _vad_reset():
 
 
 def _vad_prob(frame_int16: np.ndarray) -> float:
-    """Возвращает вероятность речи для кадра 512 сэмплов int16."""
     global _vad_h, _vad_c
     x = frame_int16.astype(np.float32) / 32768.0
     x = x.reshape(1, -1)
@@ -188,51 +196,46 @@ def recognize(audio_int16: np.ndarray) -> str | None:
         return None
 
 
-# ──────────────────────── TTS ────────────────────────
-
-async def _tts_save(text: str, path: Path, retries: int = 3):
-    """Генерирует mp3 с retry — edge-tts иногда падает на коротких фразах."""
-    for attempt in range(retries):
-        try:
-            communicate = edge_tts.Communicate(text, TTS_VOICE)
-            await communicate.save(str(path))
-            if path.exists() and path.stat().st_size > 1000:
-                return
-            print(f"[TTS retry {attempt + 1}] файл пустой")
-        except Exception as e:
-            print(f"[TTS retry {attempt + 1}] {e}")
-        await asyncio.sleep(0.5)
-    raise RuntimeError("TTS failed after retries")
-
+# ──────────────────────── TTS (Piper, локальный) ────────────────────────
 
 def speak(text: str):
     print(f"🔊 Джарвис: {text}")
     try:
-        asyncio.run(_tts_save(text, TTS_FILE))
-        size = TTS_FILE.stat().st_size
-        print(f"[mpv] играю {TTS_FILE} ({size} байт)")
-        result = subprocess.run(
-            ["mpv", "--no-terminal", str(TTS_FILE)],
+        voice = _get_piper_voice()
+        with wave.open(str(TTS_WAV), "wb") as wav_file:
+            # Параметры узнаём из первого чанка
+            first_chunk = None
+            chunks = []
+            for chunk in voice.synthesize(text):
+                if first_chunk is None:
+                    first_chunk = chunk
+                chunks.append(chunk.audio_int16_bytes)
+
+            if first_chunk is None:
+                print("[TTS] нет аудио")
+                return
+
+            wav_file.setnchannels(first_chunk.sample_channels)
+            wav_file.setsampwidth(first_chunk.sample_width)
+            wav_file.setframerate(first_chunk.sample_rate)
+            wav_file.writeframes(b"".join(chunks))
+
+        subprocess.run(
+            ["mpv", "--no-terminal", "--really-quiet", str(TTS_WAV)],
             check=False,
         )
-        print(f"[mpv] exit code: {result.returncode}")
     except Exception as e:
         print(f"[TTS error] {e}")
 
 
-# ──────────────────────── РОУТЕР (план без выполнения) ────────────────────────
+# ──────────────────────── РОУТЕР ────────────────────────
 
 def plan_command(text: str):
-    """
-    Возвращает (response_text, action_callable) или (None, None).
-    Ничего НЕ выполняет — только планирует.
-    """
+    """Возвращает (response_text, action_callable) или (None, None). Ничего не выполняет."""
     t = text.lower()
-
-    # Вырезаем обращение "джарвис"
     t = t.replace("джарвис", "").strip()
 
-    if any(w in t for w in ["проводник", "файлы", "документы", ]):
+    if any(w in t for w in ["проводник", "файлы", "документы", "папк"]):
         return (
             "Открываю проводник",
             lambda: subprocess.Popen(
@@ -245,7 +248,7 @@ def plan_command(text: str):
         "вс студия", "код",
     ]):
         return (
-            "Запускаю VS Code",
+            "Запускаю редактор кода",
             lambda: subprocess.Popen(
                 ["code"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             ),
@@ -276,19 +279,21 @@ def main():
             text = recognize(audio)
 
             if text is None:
-                # короткая запись или не разобрал — просто возвращаемся
+                continue
+
+            # Отсекаем ложные срабатывания: распознали только обращение
+            normalized = text.lower().strip().replace(",", "").replace(".", "")
+            if len(normalized.split()) <= 1 and "джарвис" in normalized:
+                print("[ложное срабатывание — игнор]")
                 continue
 
             response, action = plan_command(text)
 
             if response is None:
-                # Игнорируем короткие непонятные фразы, отвечаем только на осмысленные
                 if len(text.split()) >= 3:
-                    response = "Не знаю такой команды"
-                    speak(response)
+                    speak("Не знаю такой команды")
                 continue
 
-            # Сначала говорим — потом делаем
             speak(response)
             if action is not None:
                 try:
