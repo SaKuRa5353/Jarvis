@@ -32,8 +32,8 @@ DEVICE = 4                          # USB Audio CODEC
 WAKE_MODEL = "models/hey_jarvis_v0.1.onnx"
 VAD_MODEL = "models/silero_vad.onnx"
 
-WAKE_THRESHOLD = 0.5
-WAKE_COOLDOWN = 1.5
+WAKE_THRESHOLD = 0.35
+WAKE_COOLDOWN = 2.0
 
 VAD_FRAME = 512                     # 32 мс при 16 kHz
 VAD_SPEECH_THRESHOLD = 0.5          # порог "это речь"
@@ -209,10 +209,13 @@ def speak(text: str):
     print(f"🔊 Джарвис: {text}")
     try:
         asyncio.run(_tts_save(text, TTS_FILE))
-        subprocess.run(
-            ["mpv", "--no-terminal", "--really-quiet", str(TTS_FILE)],
+        size = TTS_FILE.stat().st_size
+        print(f"[mpv] играю {TTS_FILE} ({size} байт)")
+        result = subprocess.run(
+            ["mpv", "--no-terminal", str(TTS_FILE)],
             check=False,
         )
+        print(f"[mpv] exit code: {result.returncode}")
     except Exception as e:
         print(f"[TTS error] {e}")
 
@@ -242,7 +245,7 @@ def plan_command(text: str):
         "вс студия", "код",
     ]):
         return (
-            "Запускаю Visual Studio Code",
+            "Запускаю VS Code",
             lambda: subprocess.Popen(
                 ["code"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
             ),

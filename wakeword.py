@@ -8,7 +8,7 @@ oww = Model(wakeword_model_paths=["models/hey_jarvis_v0.1.onnx"])
 SAMPLE_RATE = 16000
 CHUNK = 1280
 DEVICE = 4
-THRESHOLD = 0.5
+THRESHOLD = 0.35
 COOLDOWN = 2.0
 
 print("Слушаю... Скажи 'Hey Jarvis' (Ctrl+C для выхода)")
