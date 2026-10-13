@@ -16,6 +16,7 @@ import onnxruntime as ort
 import speech_recognition as sr
 from openwakeword.model import Model
 from piper import PiperVoice
+from llm import JarvisLLM
 
 
 # ──────────────────────── ПОДАВЛЕНИЕ ШУМА ────────────────────────
@@ -48,7 +49,7 @@ TTS_WAV = Path("/tmp/jarvis_tts.wav")
 
 wake_model = Model(wakeword_model_paths=[WAKE_MODEL])
 vad_session = ort.InferenceSession(VAD_MODEL, providers=["CPUExecutionProvider"])
-
+llm = JarvisLLM()
 _piper_voice = None
 
 
@@ -262,6 +263,12 @@ def plan_command(text: str):
             ),
         )
 
+    # ── Fallback: спрашиваем LLM ──
+    print("🤔 Думаю (LLM)...")
+    answer = llm.ask(text)
+    if answer:
+        return answer, None
+
     return None, None
 
 
@@ -290,8 +297,7 @@ def main():
             response, action = plan_command(text)
 
             if response is None:
-                if len(text.split()) >= 3:
-                    speak("Не знаю такой команды")
+                # LLM не ответил (ошибка сети / лимит) — просто молчим
                 continue
 
             speak(response)
