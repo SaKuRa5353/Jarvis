@@ -4,7 +4,7 @@ import time
 
 from src.llm import JarvisLLM
 from src.logger import get_logger
-from src.router import plan_command
+from src.commands import plan_command
 from src.stt import recognize
 from src.tts import speak
 from src.vad import record_until_silence
