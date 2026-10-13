@@ -22,8 +22,8 @@ logger.info("Vosk модель загружена")
 # ──────────────────────── WAKE WORD ────────────────────────
 
 _WAKE_WORDS = (
-    "джарвис", "жарвис", "джарви",
-    "jarvis", "чарвис",
+    "джарвис",
+    "jarvis",
 )
 
 
@@ -45,17 +45,16 @@ def wait_for_wakeword():
     ) as stream:
         while True:
             data, _ = stream.read(block_size)
-            if rec.AcceptWaveform(bytes(data)):
-                result = json.loads(rec.Result())
-                text = result.get("text", "").lower().strip()
-                if text:
-                    logger.info("Vosk услышал: %s", text)
-                if any(word in text for word in _WAKE_WORDS):
-                    logger.info("🎯 Услышал wakeword: %s", text)
-                    return
-            else:
-                partial = json.loads(rec.PartialResult())
-                partial_text = partial.get("partial", "").lower().strip()
-                if partial_text and any(word in partial_text for word in _WAKE_WORDS):
-                    logger.info("🎯 Услышал wakeword (partial): %s", partial_text)
-                    return
+            if not rec.AcceptWaveform(bytes(data)):
+                continue
+
+            # Полный результат — только по нему принимаем решение
+            result = json.loads(rec.Result())
+            text = result.get("text", "").lower().strip()
+
+            if text:
+                logger.info("Vosk услышал: %s", text)
+
+            if any(word in text for word in _WAKE_WORDS):
+                logger.info("🎯 Услышал wakeword: %s", text)
+                return
