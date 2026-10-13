@@ -1,5 +1,7 @@
 """Оркестратор — главный цикл ассистента."""
+from src.logger import get_logger
 
+logger = get_logger("assistant")
 import time
 
 from src.llm import JarvisLLM
@@ -19,9 +21,9 @@ def _is_false_positive(text: str) -> bool:
 def run():
     llm = JarvisLLM()
 
-    print("=" * 50)
-    print("         ДЖАРВИС ЗАПУЩЕН")
-    print("=" * 50)
+    logger.info("=" * 50)
+    logger.info("         ДЖАРВИС ЗАПУЩЕН")
+    logger.info("=" * 50)
 
     while True:
         try:
@@ -31,9 +33,8 @@ def run():
 
             if text is None:
                 continue
-
             if _is_false_positive(text):
-                print("[ложное срабатывание — игнор]")
+                logger.warning("[ложное срабатывание — игнор]")
                 continue
 
             response, action = plan_command(text, llm)
@@ -46,11 +47,12 @@ def run():
                 try:
                     action()
                 except Exception as e:
-                    print(f"[action error] {e}")
+                    logger.error("[action error] %s", e)
+                    logger.error("[action error] %s", e)
 
         except KeyboardInterrupt:
-            print("\n👋 Выход")
+            logger.info("\n👋 Выход")
             break
         except Exception as e:
-            print(f"⚠️ Ошибка: {e}")
+            logger.error("⚠️ Ошибка: %s", e)
             time.sleep(1)

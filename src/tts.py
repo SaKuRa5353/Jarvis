@@ -1,5 +1,7 @@
 """Piper TTS (локальный) + mpv."""
+from src.logger import get_logger
 
+logger = get_logger("tts")
 import subprocess
 import wave
 
@@ -14,18 +16,18 @@ _voice = None
 def _get_voice() -> PiperVoice:
     global _voice
     if _voice is None:
-        print("[TTS] Загружаю Piper...")
+        logger.info("[TTS] Загружаю Piper...")
         _voice = PiperVoice.load(PIPER_MODEL)
     return _voice
 
 
 def speak(text: str):
-    print(f"🔊 Джарвис: {text}")
+    logger.info("🔊 Джарвис: %s", text)
     try:
         voice = _get_voice()
         chunks = list(voice.synthesize(text))
         if not chunks:
-            print("[TTS] нет аудио")
+            logger.warning("[TTS] нет аудио")
             return
 
         first = chunks[0]
@@ -40,4 +42,4 @@ def speak(text: str):
             check=False,
         )
     except Exception as e:
-        print(f"[TTS error] {e}")
+        logger.error("[TTS error] %s", e)

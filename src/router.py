@@ -1,4 +1,7 @@
 """Роутер команд с fallback на LLM."""
+from src.logger import get_logger
+
+logger = get_logger("router")
 
 import subprocess
 
@@ -38,7 +41,7 @@ def plan_command(text: str, llm: JarvisLLM):
         )
 
     # Fallback: LLM
-    print("🤔 Думаю (LLM)...")
+    logger.info("🤔 Думаю (LLM)...")
     answer = llm.ask(text)
     if answer:
         return answer, None

@@ -1,5 +1,7 @@
 """Silero VAD + запись до тишины."""
+from src.logger import get_logger
 
+logger = get_logger("vad")
 import numpy as np
 import onnxruntime as ort
 import sounddevice as sd
@@ -57,7 +59,7 @@ def record_until_silence() -> np.ndarray:
     min_speech_frames = int(VAD_MIN_SPEECH_SEC * SAMPLE_RATE / VAD_FRAME)
     speech_frames = 0
 
-    print("🎤 Слушаю команду...")
+    logger.info("🎤 Слушаю команду...")
 
     with sd.InputStream(
         samplerate=SAMPLE_RATE,
@@ -83,9 +85,9 @@ def record_until_silence() -> np.ndarray:
                     break
 
     if speech_frames < min_speech_frames:
-        print("⚠️ Слишком короткая речь")
+        logger.warning("⚠️ Слишком короткая речь")
         return np.array([], dtype=np.int16)
 
     audio = np.concatenate(buffer)
-    print(f"✅ Записано {len(audio) / SAMPLE_RATE:.1f} сек")
+    logger.info("✅ Записано %.1f сек", len(audio) / SAMPLE_RATE)
     return audio

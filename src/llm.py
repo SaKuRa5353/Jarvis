@@ -1,5 +1,7 @@
 """LLM через локальный Ollama с persistent историей."""
+from src.logger import get_logger
 
+logger = get_logger("llm")
 import json
 
 from openai import OpenAI
@@ -28,7 +30,7 @@ class JarvisLLM:
                 if isinstance(data, list):
                     return data
             except Exception as e:
-                print(f"[LLM] не смог прочитать историю: {e}")
+                logger.warning("[LLM] не смог прочитать историю: %s", e)
         return []
 
     def _save_history(self):
@@ -60,11 +62,11 @@ class JarvisLLM:
             )
             raw = response.choices[0].message.content
             if raw is None:
-                print("[LLM] пустой ответ")
+                logger.warning("[LLM] пустой ответ")
                 return None
             answer = raw.strip()
         except Exception as e:
-            print(f"[LLM error] {e}")
+            logger.error("[LLM error] %s", e)
             return None
 
         self.history.append({"role": "user", "content": text})

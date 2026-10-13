@@ -8,3 +8,4 @@ models/
 .env
 test_*.py
 data/
+logs/

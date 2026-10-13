@@ -1,5 +1,7 @@
 """Wakeword 'Hey Jarvis' через openWakeWord."""
+from src.logger import get_logger
 
+logger = get_logger("wakeword")
 import time
 
 import numpy as np
@@ -25,7 +27,7 @@ _last_time = 0.0
 def _callback(indata, frames, time_info, status):
     global _triggered, _last_time
     if status:
-        print(f"[wake status] {status}")
+        logger.warning("[wake status] %s", status)
     audio = (indata[:, 0] * 32767).astype(np.int16)
     prediction = _model.predict(audio)
     score = prediction.get("hey_jarvis_v0.1", 0.0)
@@ -39,7 +41,7 @@ def wait_for_wakeword():
     """Блокирующе ждёт, пока не услышит 'Hey Jarvis'."""
     global _triggered
     _triggered = False
-    print("💤 Жду 'Hey Jarvis'...")
+    logger.info("💤 Жду 'Hey Jarvis'...")
 
     with sd.InputStream(
         samplerate=SAMPLE_RATE,
@@ -52,4 +54,4 @@ def wait_for_wakeword():
         while not _triggered:
             sd.sleep(100)
 
-    print("🎯 Услышал wakeword!")
+    logger.info("🎯 Услышал wakeword!")
