@@ -1,8 +1,10 @@
 """Роутер команд с fallback на LLM."""
 
 import datetime
+import re
 import subprocess
 from pathlib import Path
+from urllib.parse import quote
 
 from src.llm import JarvisLLM
 from src.logger import get_logger
@@ -13,6 +15,23 @@ logger = get_logger("router")
 # ──────────────────────── КОНСТАНТЫ ────────────────────────
 
 SCREENSHOT_DIR = Path.home() / "Pictures" / "Screenshots"
+
+QUICK_LINKS = {
+    "расписание": "https://petrsu.ru/schedule/term?group=22404",
+    "почта": "https://mail.google.com/mail/u/0/#inbox",
+    "почту": "https://mail.google.com/mail/u/0/#inbox",
+    "youtube": "https://www.youtube.com/",
+    "ютуб": "https://www.youtube.com/",
+    "вк": "https://vk.com/feed",
+    "vk": "https://vk.com/feed",
+    "дипсик": "https://chat.deepseek.com/",
+    "дипсика": "https://chat.deepseek.com/",
+    "дип сик": "https://chat.deepseek.com/",
+    "дикси": "https://chat.deepseek.com/",
+    "deepseek": "https://chat.deepseek.com/",
+    "deep sick": "https://chat.deepseek.com/",
+    "депсик": "https://chat.deepseek.com/",
+}
 
 
 # ──────────────────────── СЛОВАРИ ────────────────────────
@@ -52,7 +71,6 @@ def _format_date(now: datetime.datetime) -> str:
 # ──────────────────────── ДЕЙСТВИЯ ────────────────────────
 
 def _screenshot_path() -> Path:
-    """Возвращает путь для сохранения скриншота с таймстампом."""
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     return SCREENSHOT_DIR / f"screenshot_{timestamp}.png"
@@ -65,6 +83,33 @@ def _make_screenshot():
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+
+
+def _open_url(url: str):
+    subprocess.Popen(
+        ["brave", url],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def _extract_search_query(text: str) -> str | None:
+    """Извлекает поисковый запрос из фразы."""
+    patterns = [
+        r"найди в гугле\s+(.+)",
+        r"загугли\s+(.+)",
+        r"найди\s+(.+)в гугле",
+        r"поищи\s+(.+)",
+        r"погугли\s+(.+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text)
+        if match:
+            query = match.group(1).strip()
+            query = re.sub(r"\s+в (гугле|интернете|сети)$", "", query)
+            if query:
+                return query
+    return None
 
 
 # ──────────────────────── РОУТЕР ────────────────────────
@@ -183,10 +228,31 @@ def plan_command(text: str, llm: JarvisLLM):
 
     # ── Скриншот ──
     if any(w in t for w in ["скриншот", "снимок экрана", "скрин"]):
+        return "Делаю скриншот", _make_screenshot
+
+    # ── Telegram (десктопное приложение) ──
+    if any(w in t for w in ["телеграм", "telegram", "тг", "телега"]):
         return (
-            "Делаю скриншот",
-            _make_screenshot,
+            "Открываю Telegram",
+            lambda: subprocess.Popen(
+                ["Telegram"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            ),
         )
+
+        # ── Быстрые ссылки ──
+    if "открой" in t or "открыть" in t:
+        for keyword, url in QUICK_LINKS.items():
+            if keyword in t:
+                response = f"Открываю"
+                return response, lambda u=url: _open_url(u)
+
+    # ── Поиск в гугле ──
+    query = _extract_search_query(t)
+    if query:
+        url = f"https://www.google.com/search?q={quote(query)}"
+        return None, lambda u=url: _open_url(u)
 
     # ── Fallback: LLM ──
     logger.info("🤔 Думаю (LLM)...")

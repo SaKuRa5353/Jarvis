@@ -1,15 +1,17 @@
 """Оркестратор — главный цикл ассистента."""
-from src.logger import get_logger
 
-logger = get_logger("assistant")
 import time
 
 from src.llm import JarvisLLM
+from src.logger import get_logger
 from src.router import plan_command
 from src.stt import recognize
 from src.tts import speak
 from src.vad import record_until_silence
 from src.wakeword import wait_for_wakeword
+
+
+logger = get_logger("assistant")
 
 
 def _is_false_positive(text: str) -> bool:
@@ -33,21 +35,26 @@ def run():
 
             if text is None:
                 continue
+
             if _is_false_positive(text):
                 logger.warning("[ложное срабатывание — игнор]")
                 continue
 
             response, action = plan_command(text, llm)
 
-            if response is None:
+            # Если и ответа, и действия нет — пропускаем
+            if response is None and action is None:
                 continue
 
-            speak(response)
+            # Сначала говорим (если есть что)
+            if response is not None:
+                speak(response)
+
+            # Потом делаем (если есть что)
             if action is not None:
                 try:
                     action()
                 except Exception as e:
-                    logger.error("[action error] %s", e)
                     logger.error("[action error] %s", e)
 
         except KeyboardInterrupt:
