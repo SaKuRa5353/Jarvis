@@ -1,57 +1,61 @@
-"""Wakeword 'Hey Jarvis' через openWakeWord."""
+"""Wakeword 'Джарвис' через Vosk (keyword spotting)."""
+
+import json
+
+import sounddevice as sd
+from vosk import KaldiRecognizer, Model
+
+from config import DEVICE, SAMPLE_RATE, VOSK_MODEL
+
 from src.logger import get_logger
 
 logger = get_logger("wakeword")
-import time
 
-import numpy as np
-import sounddevice as sd
-from openwakeword.model import Model
 
-from config import (
-    DEVICE,
-    SAMPLE_RATE,
-    WAKE_BLOCK_SIZE,
-    WAKE_COOLDOWN,
-    WAKE_MODEL,
-    WAKE_THRESHOLD,
+# ──────────────────────── МОДЕЛЬ ────────────────────────
+
+logger.info("Загружаю Vosk модель...")
+_model = Model(VOSK_MODEL)
+logger.info("Vosk модель загружена")
+
+
+# ──────────────────────── WAKE WORD ────────────────────────
+
+_WAKE_WORDS = (
+    "джарвис", "жарвис", "джарви",
+    "jarvis", "чарвис",
 )
 
 
-_model = Model(wakeword_model_paths=[WAKE_MODEL])
-
-_triggered = False
-_last_time = 0.0
-
-
-def _callback(indata, frames, time_info, status):
-    global _triggered, _last_time
-    if status:
-        logger.warning("[wake status] %s", status)
-    audio = (indata[:, 0] * 32767).astype(np.int16)
-    prediction = _model.predict(audio)
-    score = prediction.get("hey_jarvis_v0.1", 0.0)
-    now = time.time()
-    if score > WAKE_THRESHOLD and (now - _last_time) > WAKE_COOLDOWN:
-        _last_time = now
-        _triggered = True
-
-
 def wait_for_wakeword():
-    """Блокирующе ждёт, пока не услышит 'Hey Jarvis'."""
-    global _triggered
-    _triggered = False
-    logger.info("💤 Жду 'Hey Jarvis'...")
+    """Блокирующе ждёт, пока не услышит 'Джарвис'."""
+    logger.info("💤 Жду 'Джарвис'...")
 
-    with sd.InputStream(
+    rec = KaldiRecognizer(_model, SAMPLE_RATE)
+    rec.SetWords(True)
+
+    block_size = 4000   # 250 мс при 16 kHz
+
+    with sd.RawInputStream(
         samplerate=SAMPLE_RATE,
-        channels=1,
-        dtype="float32",
-        blocksize=WAKE_BLOCK_SIZE,
+        blocksize=block_size,
         device=DEVICE,
-        callback=_callback,
-    ):
-        while not _triggered:
-            sd.sleep(100)
-
-    logger.info("🎯 Услышал wakeword!")
+        dtype="int16",
+        channels=1,
+    ) as stream:
+        while True:
+            data, _ = stream.read(block_size)
+            if rec.AcceptWaveform(bytes(data)):
+                result = json.loads(rec.Result())
+                text = result.get("text", "").lower().strip()
+                if text:
+                    logger.info("Vosk услышал: %s", text)
+                if any(word in text for word in _WAKE_WORDS):
+                    logger.info("🎯 Услышал wakeword: %s", text)
+                    return
+            else:
+                partial = json.loads(rec.PartialResult())
+                partial_text = partial.get("partial", "").lower().strip()
+                if partial_text and any(word in partial_text for word in _WAKE_WORDS):
+                    logger.info("🎯 Услышал wakeword (partial): %s", partial_text)
+                    return
