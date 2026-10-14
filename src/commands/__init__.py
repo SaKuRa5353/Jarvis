@@ -15,26 +15,25 @@ _SIMPLE_HANDLERS = [apps, system, web]
 _LLM_HANDLERS = [hardware]
 
 
+LLM_MARKER = "__LLM__"
+
 def plan_command(text: str, llm: JarvisLLM):
-    """Возвращает (response_text, action_callable) или (None, None)."""
+    """Возвращает (response_text, action_callable) или (None, None).
+    
+    Если правила не сработали — возвращает (LLM_MARKER, None).
+    LLM-вызов делает assistant.py (для прерывания).
+    """
     t = text.lower().replace("джарвис", "").strip()
 
-    # Сначала простые команды
     for handler in _SIMPLE_HANDLERS:
         result = handler.try_handle(t)
         if result is not None:
             return result
 
-    # Потом команды, которым нужна LLM
     for handler in _LLM_HANDLERS:
         result = handler.try_handle(t, llm)
         if result is not None:
             return result
 
-    # Fallback: LLM
-    logger.info("🤔 Думаю (LLM)...")
-    answer = llm.ask(text)
-    if answer:
-        return answer, None
-
-    return None, None
+    # Ничего не сработало — маркер для LLM
+    return LLM_MARKER, None

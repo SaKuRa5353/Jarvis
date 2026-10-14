@@ -58,3 +58,41 @@ def wait_for_wakeword():
             if any(word in text for word in _WAKE_WORDS):
                 logger.info("🎯 Услышал wakeword: %s", text)
                 return
+
+def check_wakeword_or_done(is_done, timeout: float = 30.0) -> bool:
+    """
+    Слушает микрофон до timeout секунд.
+
+    Возвращает:
+        True  — услышал wakeword (нужно прервать операцию)
+        False — is_done() стал True (операция завершена сама, не прерываем)
+    """
+    import time as _time
+
+    rec = KaldiRecognizer(_model, SAMPLE_RATE)
+    block_size = 4000
+    deadline = _time.time() + timeout
+
+    with sd.RawInputStream(
+        samplerate=SAMPLE_RATE,
+        blocksize=block_size,
+        device=DEVICE,
+        dtype="int16",
+        channels=1,
+    ) as stream:
+        while _time.time() < deadline:
+            # Проверяем, не завершилась ли операция (LLM/TTS)
+            if is_done():
+                return False
+
+            data, _ = stream.read(block_size)
+            if not rec.AcceptWaveform(bytes(data)):
+                continue
+
+            result = json.loads(rec.Result())
+            text = result.get("text", "").lower().strip()
+            if any(word in text for word in _WAKE_WORDS):
+                logger.info("🛑 Прерывание по wakeword: %s", text)
+                return True
+
+    return False
