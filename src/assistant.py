@@ -7,7 +7,7 @@ from src.commands import LLM_MARKER, plan_command
 from src.llm import JarvisLLM
 from src.logger import get_logger
 from src.stt import recognize
-from src.tts import speak, stop_speaking
+from src.tts import _get_voice, speak, stop_speaking
 from src.vad import record_until_silence
 from src.wakeword import check_wakeword_or_done, wait_for_wakeword
 
@@ -68,6 +68,11 @@ def _speak_with_interrupt(text: str):
 
 def run():
     llm = JarvisLLM()
+
+    # Прогрев TTS — грузим Silero заранее
+    logger.info("Прогреваю TTS...")
+    _get_voice()
+    logger.info("TTS готов")
 
     logger.info("=" * 50)
     logger.info("         ДЖАРВИС ЗАПУЩЕН")

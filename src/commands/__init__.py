@@ -3,13 +3,13 @@
 from src.llm import JarvisLLM
 from src.logger import get_logger
 
-from src.commands import apps, hardware, system, web
+from src.commands import apps, hardware, system, weather, web
 
 
 logger = get_logger("commands")
 
 # Команды, которым НЕ нужен llm
-_SIMPLE_HANDLERS = [apps, system, web]
+_SIMPLE_HANDLERS = [apps, system, web, weather]
 
 # Команды, которым НУЖЕН llm (передаём вторым аргументом)
 _LLM_HANDLERS = [hardware]

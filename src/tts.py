@@ -1,29 +1,45 @@
-"""Piper TTS (локальный) + mpv с возможностью прерывания."""
+"""Silero TTS (локальный) + mpv с возможностью прерывания."""
 
 import subprocess
 import threading
-import wave
 
-from piper import PiperVoice
-
-from config import PIPER_MODEL, TTS_WAV
+from silero_tts.silero_tts import SileroTTS
 
 from src.logger import get_logger
 
 logger = get_logger("tts")
 
 
-_voice = None
+# ──────────────────────── КОНСТАНТЫ ────────────────────────
+
+SILERO_MODEL = "v5_ru"
+SILERO_SPEAKER = "eugene"
+SILERO_SAMPLE_RATE = 48000
+TTS_WAV = "/tmp/jarvis_tts.wav"
+
+
+# ──────────────────────── СОСТОЯНИЕ ────────────────────────
+
+_tts = None
 _current_mpv: subprocess.Popen | None = None
 _mpv_lock = threading.Lock()
 
 
-def _get_voice() -> PiperVoice:
-    global _voice
-    if _voice is None:
-        logger.info("[TTS] Загружаю Piper...")
-        _voice = PiperVoice.load(PIPER_MODEL)
-    return _voice
+def _get_voice() -> SileroTTS:
+    global _tts
+    if _tts is None:
+        logger.info("[TTS] Загружаю Silero (%s)...", SILERO_SPEAKER)
+        _tts = SileroTTS(
+            model_id=SILERO_MODEL,
+            language="ru",
+            speaker=SILERO_SPEAKER,
+            sample_rate=SILERO_SAMPLE_RATE,
+            device="cpu",
+            put_accent=True,
+            put_yo=True,
+        )
+        logger.info("[TTS] Silero загружен")
+    return _tts
 
 
 def stop_speaking():
@@ -40,27 +56,51 @@ def stop_speaking():
         _current_mpv = None
 
 
+# ──────────────────────── ОЧИСТКА ТЕКСТА ────────────────────────
+
+def _fix_text(text: str) -> str:
+    """Исправляет ударения и чистит символы для Silero."""
+    # Ударения (Silero понимает + перед ударной гласной)
+    stress_fixes = {
+        "Джарвис": "Дж+арвис",
+        "джарвис": "Дж+арвис",
+    }
+    for wrong, right in stress_fixes.items():
+        text = text.replace(wrong, right)
+
+    # Чистка символов, которые Silero читает плохо
+    symbol_fixes = {
+        "/": " ",           # косая черта → пробел
+        "_": " ",           # подчёркивание → пробел
+        "~": " ",           # тильда → пробел
+        "%": " процентов ",
+        "&": " и ",
+        "@": " собака ",
+        "#": " номер ",
+        "№": " номер ",
+        "°C": " градусов Цельсия",
+        "°": " градусов ",
+    }
+    for wrong, right in symbol_fixes.items():
+        text = text.replace(wrong, right)
+
+    return text
+
+
+# ──────────────────────── СИНТЕЗ + ВОСПРОИЗВЕДЕНИЕ ────────────────────────
+
 def speak(text: str):
     """Блокирующий синтез + воспроизведение. Прерывается через stop_speaking()."""
     global _current_mpv
+    text = _fix_text(text)
     logger.info("🔊 Джарвис: %s", text)
     try:
-        voice = _get_voice()
-        chunks = list(voice.synthesize(text))
-        if not chunks:
-            logger.warning("[TTS] нет аудио")
-            return
-
-        first = chunks[0]
-        with wave.open(str(TTS_WAV), "wb") as wav_file:
-            wav_file.setnchannels(first.sample_channels)
-            wav_file.setsampwidth(first.sample_width)
-            wav_file.setframerate(first.sample_rate)
-            wav_file.writeframes(b"".join(c.audio_int16_bytes for c in chunks))
+        tts = _get_voice()
+        tts.tts(text, TTS_WAV)
 
         with _mpv_lock:
             _current_mpv = subprocess.Popen(
-                ["mpv", "--no-terminal", "--really-quiet", str(TTS_WAV)],
+                ["mpv", "--no-terminal", "--really-quiet", TTS_WAV],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
