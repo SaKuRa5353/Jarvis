@@ -8,9 +8,9 @@ logger = get_logger("commands.utils")
 
 
 def open_url(url: str):
-    """Открывает URL в brave."""
+    """Открывает URL в браузере по умолчанию."""
     subprocess.Popen(
-        ["brave", url],
+        ["xdg-open", url],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
