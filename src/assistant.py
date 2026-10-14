@@ -77,6 +77,10 @@ def run():
     logger.info("=" * 50)
     logger.info("         ДЖАРВИС ЗАПУЩЕН")
     logger.info("=" * 50)
+        # Прогрев LLM — грузим Qwen в память
+    logger.info("Прогреваю LLM...")
+    llm.ask("привет")
+    logger.info("LLM готов")
 
     while True:
         try:

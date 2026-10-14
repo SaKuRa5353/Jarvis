@@ -59,6 +59,7 @@ class JarvisLLM:
                 messages=messages,
                 temperature=LLM_TEMPERATURE,
                 max_tokens=LLM_MAX_TOKENS,
+                extra_body={"options": {"num_thread": 8}},
             )
             raw = response.choices[0].message.content
             if raw is None:
