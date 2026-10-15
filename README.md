@@ -7,9 +7,10 @@
 
 - 🎤 **Wakeword «Джарвис»** — офлайн, через [Vosk](https://alphacephei.com/vosk/)
 - 🧠 **LLM** — [Qwen2.5:3b](https://ollama.com/) через Ollama (локально, приватно)
-- 🗣️ **TTS** — [Piper](https://github.com/rhasspy/piper) (голос Ruslan, естественный русский)
+- 🗣️ **TTS** — [Silero](https://github.com/snakers4/silero-models) (голос Eugene, естественный русский)
 - 🎙️ **STT** — Google Speech Recognition (ru-RU)
 - 🎚️ **VAD** — [Silero VAD](https://github.com/snakers4/silero-vad)
+- ⚡ **Скорость** — ~1-2 сек на ответ LLM (8 потоков CPU)
 - 🛑 **Прерывание по wakeword** — скажи «Джарвис» во время ответа, и он остановится
 
 ### Команды
@@ -22,6 +23,7 @@
 | **Скриншот** | «сделай скриншот» |
 | **Веб** | «открой вк», «открой youtube», «открой почту», «открой расписание» |
 | **Поиск** | «загугли X», «найди в гугле X» |
+| **Погода** | «какая погода», «погода на завтра», «погода в Москве» |
 | **Инфо** | «дай характеристику железа» |
 | **LLM** | любые вопросы: «сколько будет 2+2», «в каком году была ВОВ» |
 
@@ -48,60 +50,42 @@
 | **Spectacle** | «сделай скриншот» | `grim` + `slurp` (Wayland), `scrot` (X11) |
 | **pactl** | «сделай тише/громче», mute | — (есть в большинстве систем) |
 | **loginctl** | «заблокируй экран» | `qdbus org.kde.screensaver` (KDE) |
-| **Telegram** | «открой телеграм» | Другое приложение или веб-версия |
-| **xdg-open** | Все веб-ссылки, поиск | Встроен в большинство дистрибутивов |
-
-> **Не KDE?** Замени команды в `src/commands/apps.py` и `src/commands/system.py`:
-> - `dolphin` → `nemo`, `thunar`, `nautilus`
-> - `konsole` → `alacritty`, `kitty`, `gnome-terminal`
-> - `spectacle` → `grim` + `slurp` (Wayland) или `scrot` (X11)
 
 ## 🚀 Установка
 
-### 1. Клонируй репозиторий
+### 1. Клонировать репозиторий
 
 ```bash
-git clone https://github.com/ТВОЙ_НИК/jarvis.git
-cd jarvis
-```
-
-### 2. Создай виртуальное окружение
-
-```bash
+git clone https://github.com/SaKuRa5353/Jarvis.git
+cd Jarvis
+2. Создать виртуальное окружение
+bash
 python3.12 -m venv .venv
 source .venv/bin/activate
-pip install --upgrade pip
+3. Установить зависимости
+bash
 pip install -r requirements.txt
-```
-
-### 3. Установи системные зависимости
-
-```bash
-# Arch / CachyOS
-sudo pacman -S portaudio mpv ffmpeg
-```
-
-### 3.1. Установи опциональные приложения
-
-```bash
-# Arch / CachyOS
-sudo pacman -S brave-browser dolphin konsole spectacle telegram-desktop
-```
-
-### 4. Установи Ollama и модель
-
-```bash
+4. Установить Ollama и скачать модель
+bash
+# Установка Ollama (Arch / CachyOS)
 sudo pacman -S ollama
 sudo systemctl enable --now ollama
+
+# Скачать Qwen2.5:3b
 ollama pull qwen2.5:3b
-```
+5. Настроить Ollama для CPU (опционально, но рекомендуется)
+bash
+sudo mkdir -p /etc/systemd/system/ollama.service.d
 
-### 5. Скачай модели
+echo '[Service]' | sudo tee /etc/systemd/system/ollama.service.d/override.conf
+echo 'Environment="OLLAMA_NUM_THREADS=8"' | sudo tee -a /etc/systemd/system/ollama.service.d/override.conf
+echo 'Environment="OLLAMA_KEEP_ALIVE=30m"' | sudo tee -a /etc/systemd/system/ollama.service.d/override.conf
 
-```bash
-mkdir -p models/vosk models/piper
-
-# Vosk
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+6. Скачать модели для wakeword
+bash
+mkdir -p models/vosk
 cd models/vosk
 curl -L -O https://alphacephei.com/vosk/models/vosk-model-small-ru-0.22.zip
 unzip vosk-model-small-ru-0.22.zip
@@ -109,62 +93,84 @@ mv vosk-model-small-ru-0.22/* .
 rmdir vosk-model-small-ru-0.22
 rm vosk-model-small-ru-0.22.zip
 cd ../..
+Silero TTS и VAD скачиваются автоматически при первом запуске.
 
-# Piper
-cd models/piper
-curl -L -O https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/ruslan/medium/ru_RU-ruslan-medium.onnx
-curl -L -O https://huggingface.co/rhasspy/piper-voices/resolve/main/ru/ru_RU/ruslan/medium/ru_RU-ruslan-medium.onnx.json
-cd ../..
-```
+7. Настроить микрофон
+Проверь, что микрофон работает:
 
-### 6. Настрой микрофон
+bash
+python tests/test_mic.py
+Если amplitude < 500 — подними усиление в pavucontrol → Input Devices.
 
-```bash
+Найди индекс своего микрофона:
+
+bash
 python -c "import sounddevice; print(sounddevice.query_devices())"
-```
+Запиши индекс в config.py:
 
-Открой `config.py` и укажи свой `DEVICE`.
-
-### 7. Запуск
-
-```bash
+python
+DEVICE = 4   # ← твой индекс микрофона
+8. Запустить
+bash
 python main.py
-```
+Скажи «Джарвис» (пауза 1 сек) → «привет».
 
-Скажи **«Джарвис»** → пауза → команду.
-
-## 📁 Структура проекта
-
-```
-jarvis/
-├── main.py
-├── config.py
+🏗️ Структура проекта
+text
+Jarvis/
+├── main.py                    # точка входа
+├── config.py                  # все константы
 ├── src/
-│   ├── assistant.py
-│   ├── wakeword.py
-│   ├── vad.py
-│   ├── stt.py
-│   ├── tts.py
-│   ├── llm.py
-│   ├── logger.py
+│   ├── assistant.py           # главный цикл
+│   ├── wakeword.py            # Vosk wakeword «Джарвис»
+│   ├── vad.py                 # Silero VAD
+│   ├── stt.py                 # Google STT
+│   ├── tts.py                 # Silero TTS (Eugene)
+│   ├── llm.py                 # Ollama + Qwen2.5
+│   ├── logger.py              # логирование
 │   └── commands/
-│       ├── apps.py
-│       ├── system.py
-│       ├── web.py
-│       ├── hardware.py
-│       └── utils.py
-├── models/        (не в git)
-├── data/          (не в git)
-└── logs/          (не в git)
-```
+│       ├── __init__.py        # собирает все команды
+│       ├── apps.py            # приложения
+│       ├── system.py          # система (время, звук, скриншот)
+│       ├── web.py             # браузер, поиск
+│       ├── weather.py         # погода
+│       ├── hardware.py        # характеристики железа
+│       └── utils.py           # общие утилиты
+├── models/                    # модели (не в git)
+├── data/                      # история диалога (не в git)
+├── logs/                      # логи (не в git)
+└── tests/                     # тестовые скрипты
+🎯 Как добавить свою команду
+Открой подходящий файл в src/commands/ (например, apps.py)
 
-## 📝 Лицензия
+Добавь блок if в функцию try_handle:
 
-MIT — делай что хочешь.
+python
+def try_handle(text: str):
+    if any(w in text for w in ["мой триггер"]):
+        return (
+            "Голосовой ответ",
+            lambda: subprocess.Popen(["моя", "команда"]),
+        )
+    return None
+Готово. Команда подключится автоматически.
 
-## 🙏 Благодарности
+🙏 Благодарности
+Vosk — офлайн распознавание
 
-- [Vosk](https://alphacephei.com/vosk/) — офлайн распознавание
-- [Piper](https://github.com/rhasspy/piper) — офлайн TTS
-- [Ollama](https://ollama.com/) — локальный LLM
-- [Silero VAD](https://github.com/snakers4/silero-vad) — детекция речи
+Silero — офлайн TTS
+
+Ollama — локальный LLM
+
+Qwen — модель
+
+Silero VAD — детекция речи
+
+SpeechRecognition — STT
+
+sounddevice — аудио
+
+📄 Лицензия
+MIT — см. LICENSE.
+
+text
