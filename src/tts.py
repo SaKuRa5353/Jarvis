@@ -2,7 +2,7 @@
 
 import subprocess
 import threading
-
+import re
 from silero_tts.silero_tts import SileroTTS
 
 from src.logger import get_logger
@@ -83,6 +83,8 @@ def _fix_text(text: str) -> str:
     }
     for wrong, right in symbol_fixes.items():
         text = text.replace(wrong, right)
+    # Убираем двойные пробелы после замен
+    text = re.sub(r"\s+", " ", text).strip()
 
     return text
 
