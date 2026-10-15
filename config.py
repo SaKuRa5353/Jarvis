@@ -14,7 +14,6 @@ DEVICE = 4                          # USB Audio CODEC
 
 WAKE_MODEL = "models/hey_jarvis_v0.1.onnx"
 VAD_MODEL = "models/silero_vad.onnx"
-PIPER_MODEL = "models/piper/ru_RU-ruslan-medium.onnx"
 VOSK_MODEL = "models/vosk"
 
 # ──────────────────────── WAKE WORD ────────────────────────
