@@ -1,19 +1,25 @@
-import speech_recognition as sr
+"""Проверка STT через Vosk (офлайн, без интернета)."""
 
-r = sr.Recognizer()
-mic = sr.Microphone(device_index=4)
+import sounddevice as sd
+import numpy as np
+from src.stt import VoskSTT
 
-with mic as source:
-    r.adjust_for_ambient_noise(source, duration=1)
-    print("Говори 5 секунд...")
-    audio = r.listen(source, timeout=5, phrase_time_limit=5)
+DURATION = 5
+SR = 16000
+DEVICE = 4
 
-print("Распознаю...")
-try:
-    text = r.recognize_google(audio, language="ru-RU")
-    print(f"Ты сказал: {text}")
-except sr.UnknownValueError:
-    print("Не разобрал")
-except sr.RequestError as e:
-    print(f"Ошибка сервиса: {e}")
+print(f"Говори {DURATION} секунд... (microphone #{DEVICE})")
+rec = sd.rec(int(DURATION * SR), samplerate=SR, channels=1, dtype='int16', device=DEVICE)
+sd.wait()
+
+audio = rec.flatten()
+print(f"Записано {len(audio)/SR:.1f} сек. Amplitude: {np.abs(rec).max()}")
+
+if np.abs(rec).max() < 500:
+    print("⚠️ Слишком тихо! Подними усиление в pavucontrol.")
+    exit(1)
+
+stt = VoskSTT()
+text = stt.recognize(audio)
+print(f"Распознано: {text if text else '(пусто)'}")
 

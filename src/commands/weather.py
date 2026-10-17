@@ -99,12 +99,15 @@ def _translate_description(desc: str) -> str:
 
 
 def _get_description(condition: dict) -> str:
-    """Берёт русское описание из lang_ru, если есть. Иначе переводит."""
+    """Берёт русское описание из lang_ru, если оно кириллицей. Иначе переводит."""
     try:
         ru = condition.get("lang_ru")
         if ru and ru[0].get("value"):
             val = ru[0]["value"].strip()
-            if val:
+            if val and val.isascii():
+                # lang_ru пустой — перевести английский
+                pass
+            else:
                 return val
     except (KeyError, IndexError, TypeError):
         pass
@@ -120,7 +123,7 @@ def _get_description(condition: dict) -> str:
 def _format_wind(kmph: str) -> str:
     try:
         ms = round(int(kmph) / 3.6)
-        return f"{ms} м/с"
+        return f"{ms} метра в секунду"
     except (ValueError, TypeError):
         return ""
 
@@ -138,7 +141,7 @@ def _format_current(data: dict, fallback_city: str) -> str:
     wind = _format_wind(cur.get("windspeedKmph", ""))
     humidity = cur.get("humidity", "")
 
-    parts = [f"В {city} сейчас {temp} градусов"]
+    parts = [f"Погода, {city}: сейчас {temp} градусов"]
     if desc:
         parts.append(desc.lower())
     if feels and feels != temp:
@@ -210,8 +213,8 @@ def try_handle(text: str):
 
     data = _fetch_weather(city)
     if data is None:
-        return "Не могу получить данные о погоде. Проверь интернет.", None
+        return "Не могу получить данные о погоде. Проверь интернет.", None, None
 
     if is_tomorrow:
-        return _format_tomorrow(data, city), None
-    return _format_current(data, city), None
+        return _format_tomorrow(data, city), None, None
+    return _format_current(data, city), None, None

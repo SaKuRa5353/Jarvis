@@ -3,13 +3,15 @@
 from src.llm import JarvisLLM
 from src.logger import get_logger
 
-from src.commands import apps, hardware, system, weather, web
+from src.commands import apps, hardware, sensors, system, weather, web
 
 
 logger = get_logger("commands")
 
-# Команды, которым НЕ нужен llm
-_SIMPLE_HANDLERS = [apps, system, web, weather]
+# Команды, которым НЕ нужен llm.
+# sensors стоит раньше weather: «температура процессора» не должна
+# уйти в погодный обработчик по слову «температур».
+_SIMPLE_HANDLERS = [apps, system, sensors, web, weather]
 
 # Команды, которым НУЖЕН llm (передаём вторым аргументом)
 _LLM_HANDLERS = [hardware]
@@ -18,9 +20,9 @@ _LLM_HANDLERS = [hardware]
 LLM_MARKER = "__LLM__"
 
 def plan_command(text: str, llm: JarvisLLM):
-    """Возвращает (response_text, action_callable) или (None, None).
-    
-    Если правила не сработали — возвращает (LLM_MARKER, None).
+    """Возвращает (response_text, action_callable, phrase_key) или (None, None, None).
+
+    Если правила не сработали — возвращает (LLM_MARKER, None, None).
     LLM-вызов делает assistant.py (для прерывания).
     """
     t = text.lower().replace("джарвис", "").strip()
@@ -36,4 +38,4 @@ def plan_command(text: str, llm: JarvisLLM):
             return result
 
     # Ничего не сработало — маркер для LLM
-    return LLM_MARKER, None
+    return LLM_MARKER, None, None

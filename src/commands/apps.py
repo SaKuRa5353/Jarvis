@@ -9,6 +9,7 @@ def try_handle(text: str):
         return (
             "Открываю проводник",
             lambda: run(["dolphin"]),
+            "opening",
         )
 
     # ── VSCode ──
@@ -19,6 +20,7 @@ def try_handle(text: str):
         return (
             "Запускаю редактор кода",
             lambda: run(["code"]),
+            "opening_app",
         )
 
     # ── Браузер ──
@@ -26,6 +28,7 @@ def try_handle(text: str):
         return (
             "Открываю браузер",
             lambda: run(["brave"]),
+            "opening",
         )
 
     # ── Терминал ──
@@ -33,6 +36,7 @@ def try_handle(text: str):
         return (
             "Открываю терминал",
             lambda: run(["konsole"]),
+            "opening",
         )
 
     # ── Telegram ──
@@ -40,6 +44,7 @@ def try_handle(text: str):
         return (
             "Открываю Telegram",
             lambda: run(["Telegram"]),
+            "opening",
         )
 
     return None

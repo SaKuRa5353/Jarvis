@@ -208,4 +208,4 @@ def try_handle(text: str, llm=None):
     _print_pretty(facts)
 
     # Голосом — только короткое подтверждение
-    return "Готово, характеристики в консоли", None
+    return "Готово, характеристики в консоли", None, "done"
