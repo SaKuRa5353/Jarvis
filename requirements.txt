@@ -1,12 +1,11 @@
 # ─── Голосовой ввод/вывод ───
-vosk>=0.3.45                # wakeword + STT
+vosk>=0.3.45                # wakeword + STT (одна модель на оба)
 silero-tts>=0.0.5           # TTS (голос Eugene)
 torch>=2.0.0                # для Silero TTS
 torchaudio>=2.0.0           # для Silero TTS
 
 # ─── Обработка звука ───
 sounddevice>=0.4.6          # захват/воспроизведение
-SpeechRecognition>=3.10.0   # STT через Google
 numpy>=1.24.0               # массивы для VAD
 
 # ─── VAD ───

@@ -1,101 +1,105 @@
 """Wakeword 'Джарвис' через Vosk (keyword spotting)."""
 
 import json
+import time
 
-import sounddevice as sd
 from vosk import KaldiRecognizer, Model
 
-from config import DEVICE, SAMPLE_RATE, VOSK_MODEL
+from config import SAMPLE_RATE, WAKE_WORDS
 
+from src.audio import Microphone
 from src.logger import get_logger
+from src.vosk_model import get_vosk_model
 
 logger = get_logger("wakeword")
 
 
-# ──────────────────────── МОДЕЛЬ ────────────────────────
+class WakewordDetector:
+    """Слушает общий микрофон и ловит обращение 'Джарвис'."""
 
-logger.info("Загружаю Vosk модель...")
-_model = Model(VOSK_MODEL)
-logger.info("Vosk модель загружена")
+    def __init__(
+        self,
+        mic: Microphone,
+        model: Model | None = None,
+        wake_words: tuple[str, ...] = WAKE_WORDS,
+        sample_rate: int = SAMPLE_RATE,
+    ):
+        self.mic = mic
+        self.model = model or get_vosk_model()
+        self.wake_words = wake_words
+        self.sample_rate = sample_rate
+        self.block_size = mic.block_size
 
+    def _match(self, text: str) -> bool:
+        return any(word in text for word in self.wake_words)
 
-# ──────────────────────── WAKE WORD ────────────────────────
+    def _new_recognizer(self) -> KaldiRecognizer:
+        rec = KaldiRecognizer(self.model, self.sample_rate)
+        rec.SetWords(True)
+        return rec
 
-_WAKE_WORDS = (
-    "джарвис",
-    "джервис",
-    "джарви",
-    "джарвис,",
-    "jarvis",
-)
+    def wait(self) -> str:
+        """Блокирующе ждёт wakeword. Возвращает распознанную фразу целиком."""
+        logger.info("💤 Жду 'Джарвис'...")
+        self.mic.drain()
+        rec = self._new_recognizer()
 
-
-def wait_for_wakeword():
-    """Блокирующе ждёт, пока не услышит 'Джарвис'."""
-    logger.info("💤 Жду 'Джарвис'...")
-
-    rec = KaldiRecognizer(_model, SAMPLE_RATE)
-    rec.SetWords(True)
-
-    block_size = 4000   # 250 мс при 16 kHz
-
-    with sd.RawInputStream(
-        samplerate=SAMPLE_RATE,
-        blocksize=block_size,
-        device=DEVICE,
-        dtype="int16",
-        channels=1,
-    ) as stream:
         while True:
-            data, _ = stream.read(block_size)
-            if not rec.AcceptWaveform(bytes(data)):
+            frame = self.mic.read(self.block_size)
+            if not rec.AcceptWaveform(frame.tobytes()):
                 continue
 
-            # Полный результат — только по нему принимаем решение
-            result = json.loads(rec.Result())
-            text = result.get("text", "").lower().strip()
+            text = _text_of(rec.Result())
+            if not text:
+                continue
 
-            if text:
-                logger.info("Vosk услышал: %s", text)
+            logger.info("Vosk услышал: %s", text)
 
-            if any(word in text for word in _WAKE_WORDS):
+            if self._match(text):
                 logger.info("🎯 Услышал wakeword: %s", text)
-                return
+                return text
 
-def check_wakeword_or_done(is_done, timeout: float = 30.0) -> bool:
-    """
-    Слушает микрофон до timeout секунд.
+    def strip_wakeword(self, text: str) -> str:
+        """Убирает wakeword из фразы, возвращает хвост команды."""
+        t = text.lower()
+        for ww in self.wake_words:
+            t = t.replace(ww, "").strip()
+        return t
 
-    Возвращает:
-        True  — услышал wakeword (нужно прервать операцию)
-        False — is_done() стал True (операция завершена сама, не прерываем)
-    """
-    import time as _time
+    def wait_or_done(self, is_done, timeout: float = 30.0) -> bool:
+        """
+        Слушает микрофон до timeout секунд.
 
-    rec = KaldiRecognizer(_model, SAMPLE_RATE)
-    block_size = 4000
-    deadline = _time.time() + timeout
+        Возвращает:
+            True  — услышал wakeword (нужно прервать операцию)
+            False — is_done() стал True (операция завершилась сама)
+        """
+        self.mic.drain()
+        rec = self._new_recognizer()
+        deadline = time.monotonic() + timeout
 
-    with sd.RawInputStream(
-        samplerate=SAMPLE_RATE,
-        blocksize=block_size,
-        device=DEVICE,
-        dtype="int16",
-        channels=1,
-    ) as stream:
-        while _time.time() < deadline:
-            # Проверяем, не завершилась ли операция (LLM/TTS)
+        while time.monotonic() < deadline:
             if is_done():
                 return False
 
-            data, _ = stream.read(block_size)
-            if not rec.AcceptWaveform(bytes(data)):
+            try:
+                frame = self.mic.read(self.block_size, timeout=0.5)
+            except TimeoutError:
                 continue
 
-            result = json.loads(rec.Result())
-            text = result.get("text", "").lower().strip()
-            if any(word in text for word in _WAKE_WORDS):
+            if not rec.AcceptWaveform(frame.tobytes()):
+                continue
+
+            text = _text_of(rec.Result())
+            if text and self._match(text):
                 logger.info("🛑 Прерывание по wakeword: %s", text)
                 return True
 
-    return False
+        return False
+
+
+def _text_of(raw_json: str) -> str:
+    try:
+        return json.loads(raw_json).get("text", "").lower().strip()
+    except (ValueError, AttributeError):
+        return ""

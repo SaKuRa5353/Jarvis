@@ -1,28 +1,47 @@
-"""Google Speech-to-Text."""
-from src.logger import get_logger
+"""Vosk Speech-to-Text (полностью офлайн)."""
 
-logger = get_logger("stt")
+import json
+
 import numpy as np
-import speech_recognition as sr
+from vosk import KaldiRecognizer, Model
 
 from config import SAMPLE_RATE
 
+from src.logger import get_logger
+from src.vosk_model import get_vosk_model
 
-_recognizer = sr.Recognizer()
+logger = get_logger("stt")
 
 
-def recognize(audio_int16: np.ndarray) -> str | None:
-    if len(audio_int16) == 0:
-        return None
-    audio_data = sr.AudioData(audio_int16.tobytes(), SAMPLE_RATE, 2)
-    logger.info("🧠 Распознаю...")
-    try:
-        text = _recognizer.recognize_google(audio_data, language="ru-RU")
-        logger.info("📝 Ты: %s", text)
-        return text
-    except sr.UnknownValueError:
-        logger.warning("❌ Не разобрал")
-        return None
-    except sr.RequestError as e:
-        logger.error("❌ Ошибка STT: %s", e)
-        return None
+class VoskSTT:
+    """Распознавание речи через Vosk."""
+
+    def __init__(self, model: Model | None = None, sample_rate: int = SAMPLE_RATE):
+        self.model = model or get_vosk_model()
+        self.sample_rate = sample_rate
+
+    def recognize(self, audio_int16: np.ndarray) -> str | None:
+        """Распознаёт текст из аудио (int16 PCM моно)."""
+        if len(audio_int16) == 0:
+            return None
+
+        logger.info("🧠 Распознаю голос...")
+
+        rec = KaldiRecognizer(self.model, self.sample_rate)
+
+        # Разбиваем на чанки 4000 байт (250 мс при 16 kHz)
+        data = audio_int16.tobytes()
+        chunk_size = 4000
+
+        for i in range(0, len(data), chunk_size):
+            rec.AcceptWaveform(data[i : i + chunk_size])
+
+        result = json.loads(rec.FinalResult())
+        text = result.get("text", "").strip()
+
+        if text:
+            logger.info("📝 Ты: %s", text)
+        else:
+            logger.warning("❌ Не разобрал (пустой результат Vosk)")
+
+        return text if text else None
