@@ -10,8 +10,10 @@ from config import (
     HISTORY_FILE,
     LLM_MAX_TOKENS,
     LLM_MODEL,
+    LLM_NUM_THREADS,
     LLM_SYSTEM_PROMPT,
     LLM_TEMPERATURE,
+    LLM_TIMEOUT_SEC,
     MAX_HISTORY_MESSAGES,
     OLLAMA_BASE_URL,
 )
@@ -19,7 +21,11 @@ from config import (
 
 class JarvisLLM:
     def __init__(self, model: str = LLM_MODEL):
-        self.client = OpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+        self.client = OpenAI(
+            base_url=OLLAMA_BASE_URL,
+            api_key="ollama",
+            timeout=LLM_TIMEOUT_SEC,
+        )
         self.model = model
         self.history = self._load_history()
 
@@ -48,8 +54,18 @@ class JarvisLLM:
         self.history = []
         self._save_history()
 
-    def ask(self, text: str) -> str | None:
-        messages = [{"role": "system", "content": LLM_SYSTEM_PROMPT}]
+    def ask(self, text: str, context: str | None = None) -> str | None:
+        """Отправляет запрос в LLM.
+
+        context — необязательная строка окружения (например, активное окно).
+        Она попадает только в системный промпт текущего запроса и НЕ
+        сохраняется в историю, чтобы не накапливать устаревший контекст.
+        """
+        system_prompt = LLM_SYSTEM_PROMPT
+        if context:
+            system_prompt = f"{system_prompt}\n{context}"
+
+        messages = [{"role": "system", "content": system_prompt}]
         messages.extend(self.history)
         messages.append({"role": "user", "content": text})
 
@@ -59,7 +75,9 @@ class JarvisLLM:
                 messages=messages,
                 temperature=LLM_TEMPERATURE,
                 max_tokens=LLM_MAX_TOKENS,
-                extra_body={"options": {"num_thread": 8}},
+                extra_body={
+                    "options": {"num_thread": LLM_NUM_THREADS},
+                },
             )
             raw = response.choices[0].message.content
             if raw is None:
