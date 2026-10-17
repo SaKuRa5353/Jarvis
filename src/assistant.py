@@ -2,15 +2,17 @@
 
 import threading
 import time
+import traceback
 
+from src.audio import Microphone, MicrophoneError
 from src.commands import LLM_MARKER, plan_command
 from src.llm import JarvisLLM
 from src.logger import get_logger
-from src.stt import recognize
-from src.tts import _get_voice, speak, stop_speaking
-from src.vad import record_until_silence
-from src.wakeword import check_wakeword_or_done, wait_for_wakeword
-
+from src.stt import VoskSTT
+from src.tts import _get_voice, speak, speak_phrase, stop_speaking
+from src.vad import SpeechRecorder
+from src.wakeword import WakewordDetector
+from src.window_context import get_window_context
 
 logger = get_logger("assistant")
 
@@ -21,13 +23,18 @@ def _is_false_positive(text: str) -> bool:
     return len(normalized.split()) <= 1 and "джарвис" in normalized
 
 
-def _ask_with_interrupt(llm: JarvisLLM, text: str) -> str | None:
+def _ask_with_interrupt(
+    llm: JarvisLLM,
+    detector: WakewordDetector,
+    text: str,
+    context: str | None = None,
+) -> str | None:
     """Отправляет запрос в LLM, но прерывает по wakeword."""
     result = {"answer": None, "done": False, "error": None}
 
     def _do_ask():
         try:
-            result["answer"] = llm.ask(text)
+            result["answer"] = llm.ask(text, context=context)
         except Exception as e:
             result["error"] = e
         finally:
@@ -36,7 +43,7 @@ def _ask_with_interrupt(llm: JarvisLLM, text: str) -> str | None:
     thread = threading.Thread(target=_do_ask, daemon=True)
     thread.start()
 
-    interrupted = check_wakeword_or_done(lambda: result["done"], timeout=30.0)
+    interrupted = detector.wait_or_done(lambda: result["done"], timeout=30.0)
 
     if interrupted:
         logger.info("🛑 LLM прервана — начинаем заново")
@@ -49,12 +56,12 @@ def _ask_with_interrupt(llm: JarvisLLM, text: str) -> str | None:
     return result["answer"]
 
 
-def _speak_with_interrupt(text: str):
+def _speak_with_interrupt(detector: WakewordDetector, text: str, phrase_key: str | None = None):
     """Говорит текст, но если услышит 'Джарвис' — прерывает."""
-    tts_thread = threading.Thread(target=speak, args=(text,), daemon=True)
+    tts_thread = threading.Thread(target=speak, args=(text, phrase_key), daemon=True)
     tts_thread.start()
 
-    interrupted = check_wakeword_or_done(
+    interrupted = detector.wait_or_done(
         lambda: not tts_thread.is_alive(),
         timeout=30.0,
     )
@@ -66,60 +73,101 @@ def _speak_with_interrupt(text: str):
     tts_thread.join(timeout=1)
 
 
-def run():
-    llm = JarvisLLM()
+def _warmup_llm(llm: JarvisLLM):
+    """Прогревает модель без записи в историю."""
+    logger.info("Прогреваю LLM...")
+    try:
+        # Временно отключаем сохранение
+        history = llm.history
+        llm.history = []
+        llm.ask("привет")
+        llm.history = history
+        logger.info("LLM готова")
+    except Exception as e:
+        logger.warning("[LLM] прогрев не удался: %s", e)
 
-    # Прогрев TTS — грузим Silero заранее
+
+def run():
+    # ── Ядро ──
+    llm = JarvisLLM()
+    mic = Microphone()
+    stt = VoskSTT()
+    recorder = SpeechRecorder(mic)
+    detector = WakewordDetector(mic)
+
+    # ── Прогрев ──
     logger.info("Прогреваю TTS...")
     _get_voice()
     logger.info("TTS готов")
 
+    _warmup_llm(llm)
+
     logger.info("=" * 50)
     logger.info("         ДЖАРВИС ЗАПУЩЕН")
     logger.info("=" * 50)
-        # Прогрев LLM — грузим Qwen в память
-    logger.info("Прогреваю LLM...")
-    llm.ask("привет")
-    logger.info("LLM готов")
 
-    while True:
-        try:
-            wait_for_wakeword()
-            audio = record_until_silence()
-            text = recognize(audio)
+    # ── Главный цикл ──
+    with mic:
+        while True:
+            try:
+                # 1. Ждём обращения
+                wake_text = detector.wait()
+                speak_phrase("welcome")
 
-            if text is None:
-                continue
+                # 2. Если пользователь сказал «Джарвис, открой код» —
+                #    хвост фразы обрабатываем сразу, не тратя время на VAD.
+                command_text = detector.strip_wakeword(wake_text).strip()
 
-            if _is_false_positive(text):
-                logger.warning("[ложное срабатывание — игнор]")
-                continue
+                if command_text:
+                    text = command_text
+                    logger.info("🗣️ Команда из хвоста wakeword: %s", text)
+                else:
+                    # 3. Записываем команду через VAD
+                    audio = recorder.record()
+                    if len(audio) == 0:
+                        continue
 
-            response, action = plan_command(text, llm)
+                    # 4. Распознаём речь
+                    text = stt.recognize(audio)
+                    if text is None:
+                        continue
 
-            # Обработка маркера LLM
-            if response == LLM_MARKER:
-                logger.info("🤔 Думаю (LLM)...")
-                answer = _ask_with_interrupt(llm, text)
-                if answer:
-                    _speak_with_interrupt(answer)
-                continue
+                # 5. Фильтруем ложные срабатывания
+                if _is_false_positive(text):
+                    logger.warning("[ложное срабатывание — игнор]")
+                    continue
 
-            # Обычный поток (правила)
-            if response is None and action is None:
-                continue
+                # 6. Ищем команду или отправляем в LLM
+                response, action, phrase_key = plan_command(text, llm)
 
-            if response is not None:
-                _speak_with_interrupt(response)
-            if action is not None:
-                try:
-                    action()
-                except Exception as e:
-                    logger.error("[action error] %s", e)
+                if response == LLM_MARKER:
+                    speak_phrase("llm_thinking")
+                    logger.info("🤔 Думаю (LLM)...")
+                    context = get_window_context()
+                    if context:
+                        logger.info("📎 %s", context)
+                    answer = _ask_with_interrupt(llm, detector, text, context)
+                    if answer:
+                        _speak_with_interrupt(detector, answer)
+                    continue
 
-        except KeyboardInterrupt:
-            logger.info("\n👋 Выход")
-            break
-        except Exception as e:
-            logger.error("⚠️ Ошибка: %s", e)
-            time.sleep(1)
+                if response is None and action is None:
+                    continue
+
+                if response is not None:
+                    _speak_with_interrupt(detector, response, phrase_key)
+                if action is not None:
+                    try:
+                        action()
+                    except Exception as e:
+                        logger.error("[action error] %s", e)
+
+            except MicrophoneError as e:
+                logger.error("⚠️ Микрофон: %s — перезапуск через 3 сек", e)
+                time.sleep(3)
+            except KeyboardInterrupt:
+                logger.info("\n👋 Выход")
+                break
+            except Exception:
+                logger.error("⚠️ Ошибка цикла: %s", traceback.format_exc())
+                time.sleep(1)
