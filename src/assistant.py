@@ -1,8 +1,15 @@
-"""Оркестратор — главный цикл ассистента с прерыванием."""
+"""Оркестратор — главный цикл ассистента с прерыванием.
+
+Режим диалога: после первого обращения (wake word + команда) ассистент
+остается «на связи» и слушает следующие 15 секунд без повторного «Джарвис».
+Если за это время пользователь скажет «Джарвис» — диалог прерывается.
+"""
 
 import threading
 import time
 import traceback
+
+from config import CONVERSATION_TIMEOUT_SEC
 
 from src.audio import Microphone, MicrophoneError
 from src.commands import LLM_MARKER, plan_command
@@ -21,6 +28,96 @@ def _is_false_positive(text: str) -> bool:
     """Отсекает ложные срабатывания: распознали только обращение."""
     normalized = text.lower().strip().replace(",", "").replace(".", "")
     return len(normalized.split()) <= 1 and "джарвис" in normalized
+
+
+def _process_command(
+    text: str,
+    llm: JarvisLLM,
+    detector: WakewordDetector,
+    plan_command_func,
+    _ask_fn,
+    _speak_fn,
+    _get_window_ctx,
+):
+    """Обрабатывает одну команду: ищет правило → LLM → ответ."""
+    # Фильтруем ложные срабатывания
+    if _is_false_positive(text):
+        logger.warning("[ложное срабатывание — игнор]")
+        return
+
+    # Нечёткое исправление ошибок Vosk
+    corrected = correct(text)
+    if corrected != text:
+        logger.info("🔧 ИИ исправил: %r → %r", text, corrected)
+        text = corrected
+
+    # Ищем команду или отправляем в LLM
+    response, action, phrase_key = plan_command_func(text, llm)
+
+    if response == LLM_MARKER:
+        speak_phrase("llm_thinking")
+        logger.info("🤔 Думаю (LLM)...")
+        context = _get_window_ctx()
+        if context:
+            logger.info("📎 %s", context)
+        answer = _ask_fn(llm, detector, text, context)
+        if answer:
+            phrase_key = junk_phrase(answer)
+            if phrase_key:
+                logger.info("🔹 Мусорный ответ — играю фразу: %s", phrase_key)
+            _speak_fn(detector, answer, phrase_key)
+        return
+
+    if response is None and action is None:
+        return
+
+    if response is not None:
+        _speak_fn(detector, response, phrase_key)
+    if action is not None:
+        try:
+            action()
+        except Exception as e:
+            logger.error("[action error] %s", e)
+
+
+def _run_conversation(
+    llm,
+    detector,
+    recorder,
+    plan_command_func,
+    _ask_fn,
+    _speak_fn,
+    _get_window_ctx,
+):
+    """Режим диалога: 15 сек без «Джарвис».
+
+    Слушает фразы через wakeword-детектор. Если видит wakeword —
+    прерывает диалог. Если видит команду — обрабатывает.
+    """
+    logger.info("💬 Режим диалога: %d сек", CONVERSATION_TIMEOUT_SEC)
+    deadline = time.monotonic() + CONVERSATION_TIMEOUT_SEC
+
+    while time.monotonic() < deadline:
+        # Ждём следующую фразу через _utterances() — он использует VAD-гейт
+        interrupted = False
+        for text in detector._utterances(deadline=deadline):
+            # Если это wakeword — прерываем диалог
+            if detector._match(text):
+                logger.info("🎯 Wakeword в диалоге — выход")
+                interrupted = True
+                break
+
+            # Обработка команды
+            _process_command(
+                text, llm, detector, plan_command_func,
+                _ask_fn, _speak_fn, _get_window_ctx,
+            )
+
+        if interrupted:
+            return True  # wakeword → начинаем новый цикл с «К вашим услугам»
+
+    logger.info("⏰ Режим диалога завершён (таймаут)")
+    return False  # таймаут → начинаем новый цикл с «К вашим услугам»
 
 
 def _ask_with_interrupt(
@@ -77,7 +174,6 @@ def _warmup_llm(llm: JarvisLLM):
     """Прогревает модель без записи в историю."""
     logger.info("Прогреваю LLM...")
     try:
-        # Временно отключаем сохранение
         history = llm.history
         llm.history = []
         llm.ask("привет")
@@ -131,44 +227,20 @@ def run():
                     if not text:
                         continue
 
-                # 4. Фильтруем ложные срабатывания
-                if _is_false_positive(text):
-                    logger.warning("[ложное срабатывание — игнор]")
-                    continue
+                # 4. Обрабатываем команду
+                _process_command(
+                    text, llm, detector, plan_command,
+                    _ask_with_interrupt, _speak_with_interrupt,
+                    get_window_context,
+                )
 
-                # 4.5. Нечёткое исправление ошибок Vosk
-                corrected = correct(text)
-                if corrected != text:
-                    logger.info("🔧 ИИ исправил: %r → %r", text, corrected)
-                    text = corrected
-
-                # 5. Ищем команду или отправляем в LLM
-                response, action, phrase_key = plan_command(text, llm)
-
-                if response == LLM_MARKER:
-                    speak_phrase("llm_thinking")
-                    logger.info("🤔 Думаю (LLM)...")
-                    context = get_window_context()
-                    if context:
-                        logger.info("📎 %s", context)
-                    answer = _ask_with_interrupt(llm, detector, text, context)
-                    if answer:
-                        phrase_key = junk_phrase(answer)
-                        if phrase_key:
-                            logger.info("🔹 Мусорный ответ — играю фразу: %s", phrase_key)
-                        _speak_with_interrupt(detector, answer, phrase_key)
-                    continue
-
-                if response is None and action is None:
-                    continue
-
-                if response is not None:
-                    _speak_with_interrupt(detector, response, phrase_key)
-                if action is not None:
-                    try:
-                        action()
-                    except Exception as e:
-                        logger.error("[action error] %s", e)
+                # 5. Режим диалога — слушаем следующие 15 сек без «Джарвис»
+                speak_phrase("done")
+                _run_conversation(
+                    llm, detector, recorder, plan_command,
+                    _ask_with_interrupt, _speak_with_interrupt,
+                    get_window_context,
+                )
 
             except MicrophoneError as e:
                 logger.error("⚠️ Микрофон: %s — перезапуск через 3 сек", e)

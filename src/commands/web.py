@@ -12,6 +12,8 @@ QUICK_LINKS = {
     "почту": "https://mail.google.com/mail/u/0/#inbox",
     "youtube": "https://www.youtube.com/",
     "ютуб": "https://www.youtube.com/",
+    "музыка": "https://music.yandex.ru/",
+    "музыку": "https://music.yandex.ru/",
     "вк": "https://vk.com/feed",
     "vk": "https://vk.com/feed",
     # Vosk слышит «ВК» как «вэ ка» / «века»

@@ -8,7 +8,6 @@
 import json
 
 import numpy as np
-import onnxruntime as ort
 from vosk import KaldiRecognizer
 
 from config import (
@@ -17,22 +16,15 @@ from config import (
     VAD_MAX_RECORD_SEC,
     VAD_MIN_SILENCE_SEC,
     VAD_MIN_SPEECH_SEC,
-    VAD_MODEL,
     VAD_SPEECH_THRESHOLD,
 )
 
 from src.audio import Subscriber
 from src.logger import get_logger
+from src.silero_vad import SileroVAD
 from src.vosk_model import get_vosk_model
 
 logger = get_logger("vad")
-
-
-# ──────────────────────── МОДЕЛЬ ────────────────────────
-
-logger.info("Загружаю Silero VAD...")
-_vad_session = ort.InferenceSession(VAD_MODEL, providers=["CPUExecutionProvider"])
-logger.info("Silero VAD загружен")
 
 
 class SpeechRecorder:
@@ -45,34 +37,13 @@ class SpeechRecorder:
     def __init__(
         self,
         sub: Subscriber,
-        session: ort.InferenceSession | None = None,
         sample_rate: int = SAMPLE_RATE,
         frame: int = VAD_FRAME,
     ):
         self.sub = sub
-        self.session = session or _vad_session
         self.sample_rate = sample_rate
         self.frame = frame
-        self._h = np.zeros((2, 1, 64), dtype=np.float32)
-        self._c = np.zeros((2, 1, 64), dtype=np.float32)
-
-    def _reset(self):
-        self._h = np.zeros((2, 1, 64), dtype=np.float32)
-        self._c = np.zeros((2, 1, 64), dtype=np.float32)
-
-    def _prob(self, frame_int16: np.ndarray) -> float:
-        x = frame_int16.astype(np.float32) / 32768.0
-        x = x.reshape(1, -1)
-        out, self._h, self._c = self.session.run(
-            None,
-            {
-                "input": x,
-                "sr": np.array(self.sample_rate, dtype=np.int64),
-                "h": self._h,
-                "c": self._c,
-            },
-        )
-        return float(out[0][0])
+        self.vad = SileroVAD(sample_rate)
 
     def record(self) -> tuple[np.ndarray, str]:
         """Читает из общего микрофона, пока не наступит тишина.
@@ -81,7 +52,7 @@ class SpeechRecorder:
         или ошибке — (пустой массив, "").
         """
         self.sub.drain()
-        self._reset()
+        self.vad.reset()
 
         rec = KaldiRecognizer(get_vosk_model(), self.sample_rate)
 
@@ -100,7 +71,7 @@ class SpeechRecorder:
             self.sub.check()
             frame = self.sub.read(self.frame)
             rec.AcceptWaveform(frame.tobytes())
-            prob = self._prob(frame)
+            prob = self.vad.prob(frame)
 
             if prob > VAD_SPEECH_THRESHOLD:
                 speech_started = True
@@ -127,6 +98,13 @@ class SpeechRecorder:
             logger.warning("❌ Не разобрал (пустой результат Vosk)")
 
         return audio, text
+
+
+def _text_of(raw_json: str) -> str:
+    try:
+        return json.loads(raw_json).get("text", "").strip()
+    except (ValueError, AttributeError):
+        return ""
 
 
 def _text_of(raw_json: str) -> str:
