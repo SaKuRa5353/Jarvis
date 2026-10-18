@@ -6,6 +6,7 @@ import traceback
 
 from src.audio import Microphone, MicrophoneError
 from src.commands import LLM_MARKER, plan_command
+from src.fuzzy import correct
 from src.llm import JarvisLLM, junk_phrase
 from src.logger import get_logger
 from src.stt import VoskSTT
@@ -136,6 +137,12 @@ def run():
                 if _is_false_positive(text):
                     logger.warning("[ложное срабатывание — игнор]")
                     continue
+
+                # 5.5. Нечёткое исправление ошибок Vosk
+                corrected = correct(text)
+                if corrected != text:
+                    logger.info("🔧 ИИ исправил: %r → %r", text, corrected)
+                    text = corrected
 
                 # 6. Ищем команду или отправляем в LLM
                 response, action, phrase_key = plan_command(text, llm)
