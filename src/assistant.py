@@ -6,7 +6,7 @@ import traceback
 
 from src.audio import Microphone, MicrophoneError
 from src.commands import LLM_MARKER, plan_command
-from src.llm import JarvisLLM
+from src.llm import JarvisLLM, junk_phrase
 from src.logger import get_logger
 from src.stt import VoskSTT
 from src.tts import _get_voice, speak, speak_phrase, stop_speaking
@@ -148,7 +148,10 @@ def run():
                         logger.info("📎 %s", context)
                     answer = _ask_with_interrupt(llm, detector, text, context)
                     if answer:
-                        _speak_with_interrupt(detector, answer)
+                        phrase_key = junk_phrase(answer)
+                        if phrase_key:
+                            logger.info("🔹 Мусорный ответ — играю фразу: %s", phrase_key)
+                        _speak_with_interrupt(detector, answer, phrase_key)
                     continue
 
                 if response is None and action is None:

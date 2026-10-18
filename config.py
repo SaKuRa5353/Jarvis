@@ -71,8 +71,7 @@ LLM_MAX_TOKENS = 30
 LLM_TEMPERATURE = 0.3
 LLM_NUM_THREADS = 8
 LLM_TIMEOUT_SEC = 30
-HISTORY_FILE = Path("data/history.json")
-MAX_HISTORY_MESSAGES = 6
+MAX_HISTORY_MESSAGES = 6    # хранится только в памяти текущей сессии
 LLM_SYSTEM_PROMPT = (
     "Ты — Джарвис, голосовой ассистент. "
     "Отвечай по-русски, коротко: максимум 5 слов, сразу по делу. "

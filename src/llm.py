@@ -1,13 +1,12 @@
-"""LLM через локальный Ollama с persistent историей."""
+"""LLM через локальный Ollama. История хранится только в текущей сессии."""
+
 from src.logger import get_logger
 
 logger = get_logger("llm")
-import json
 
 from openai import OpenAI
 
 from config import (
-    HISTORY_FILE,
     LLM_MAX_TOKENS,
     LLM_MODEL,
     LLM_NUM_THREADS,
@@ -18,6 +17,20 @@ from config import (
     OLLAMA_BASE_URL,
 )
 
+# Ответы-пустышки: не добавляем их в историю, чтобы модель не копировала
+# собственную ошибку из контекста. Значение — ключ готовой фразы, которой
+# ассистент заменит синтез.
+JUNK_ANSWERS = {
+    "не расслышал": "not_listened",
+    "не придумывай факты": "not_listened",
+}
+
+
+def junk_phrase(answer: str) -> str | None:
+    """Ключ готовой фразы, если ответ — мусор, иначе None."""
+    key = answer.lower().strip().rstrip(".,!?;:")
+    return JUNK_ANSWERS.get(key)
+
 
 class JarvisLLM:
     def __init__(self, model: str = LLM_MODEL):
@@ -27,39 +40,22 @@ class JarvisLLM:
             timeout=LLM_TIMEOUT_SEC,
         )
         self.model = model
-        self.history = self._load_history()
+        self.history: list[dict] = []
 
-    def _load_history(self) -> list[dict]:
-        if HISTORY_FILE.exists():
-            try:
-                data = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-                if isinstance(data, list):
-                    return data
-            except Exception as e:
-                logger.warning("[LLM] не смог прочитать историю: %s", e)
-        return []
-
-    def _save_history(self):
-        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        HISTORY_FILE.write_text(
-            json.dumps(self.history, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+    def clear_history(self):
+        self.history = []
 
     def _trim_history(self):
         if len(self.history) > MAX_HISTORY_MESSAGES:
             self.history = self.history[-MAX_HISTORY_MESSAGES:]
 
-    def clear_history(self):
-        self.history = []
-        self._save_history()
-
     def ask(self, text: str, context: str | None = None) -> str | None:
         """Отправляет запрос в LLM.
 
         context — необязательная строка окружения (например, активное окно).
-        Она попадает только в системный промпт текущего запроса и НЕ
-        сохраняется в историю, чтобы не накапливать устаревший контекст.
+        Попадает только в системный промпт текущего запроса.
+
+        Возвращает ответ или None при ошибке.
         """
         system_prompt = LLM_SYSTEM_PROMPT
         if context:
@@ -88,9 +84,13 @@ class JarvisLLM:
             logger.error("[LLM error] %s", e)
             return None
 
+        # Не сохраняем мусорные ответы — модель не будет их копировать.
+        if junk_phrase(answer):
+            logger.warning("[LLM] мусор в ответе: %s", answer)
+            return answer
+
         self.history.append({"role": "user", "content": text})
         self.history.append({"role": "assistant", "content": answer})
         self._trim_history()
-        self._save_history()
 
         return answer
