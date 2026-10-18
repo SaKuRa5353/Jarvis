@@ -1,7 +1,15 @@
-"""Silero VAD + запись команды до тишины."""
+"""Silero VAD + запись команды до тишины.
+
+Речь распознаётся параллельно с записью: каждый блок аудио идёт и в VAD,
+и в KaldiRecognizer. Когда VAD решает, что команда окончена, текст уже
+готов — экономия ~1 секунды на отдельном проходе распознавания.
+"""
+
+import json
 
 import numpy as np
 import onnxruntime as ort
+from vosk import KaldiRecognizer
 
 from config import (
     SAMPLE_RATE,
@@ -13,8 +21,9 @@ from config import (
     VAD_SPEECH_THRESHOLD,
 )
 
-from src.audio import Microphone
+from src.audio import Subscriber
 from src.logger import get_logger
+from src.vosk_model import get_vosk_model
 
 logger = get_logger("vad")
 
@@ -27,16 +36,20 @@ logger.info("Silero VAD загружен")
 
 
 class SpeechRecorder:
-    """Режет речь из общего потока микрофона по Silero VAD."""
+    """Режет речь из общего потока микрофона по Silero VAD.
+
+    Одновременно кормит тем же аудио Vosk-распознаватель, поэтому по
+    окончании записи текст уже готов.
+    """
 
     def __init__(
         self,
-        mic: Microphone,
+        sub: Subscriber,
         session: ort.InferenceSession | None = None,
         sample_rate: int = SAMPLE_RATE,
         frame: int = VAD_FRAME,
     ):
-        self.mic = mic
+        self.sub = sub
         self.session = session or _vad_session
         self.sample_rate = sample_rate
         self.frame = frame
@@ -61,10 +74,16 @@ class SpeechRecorder:
         )
         return float(out[0][0])
 
-    def record(self) -> np.ndarray:
-        """Читает из общего микрофона, пока не наступит тишина."""
-        self.mic.drain()
+    def record(self) -> tuple[np.ndarray, str]:
+        """Читает из общего микрофона, пока не наступит тишина.
+
+        Возвращает (аудио, распознанный текст). При слишком короткой речи
+        или ошибке — (пустой массив, "").
+        """
+        self.sub.drain()
         self._reset()
+
+        rec = KaldiRecognizer(get_vosk_model(), self.sample_rate)
 
         buffer: list[np.ndarray] = []
         speech_started = False
@@ -78,7 +97,9 @@ class SpeechRecorder:
         logger.info("🎤 Слушаю команду...")
 
         for _ in range(max_frames):
-            frame = self.mic.read(self.frame)
+            self.sub.check()
+            frame = self.sub.read(self.frame)
+            rec.AcceptWaveform(frame.tobytes())
             prob = self._prob(frame)
 
             if prob > VAD_SPEECH_THRESHOLD:
@@ -94,8 +115,22 @@ class SpeechRecorder:
 
         if speech_frames < min_speech_frames:
             logger.warning("⚠️ Слишком короткая речь")
-            return np.array([], dtype=np.int16)
+            return np.array([], dtype=np.int16), ""
 
         audio = np.concatenate(buffer)
         logger.info("✅ Записано %.1f сек", len(audio) / self.sample_rate)
-        return audio
+
+        text = _text_of(rec.FinalResult())
+        if text:
+            logger.info("📝 Ты: %s", text)
+        else:
+            logger.warning("❌ Не разобрал (пустой результат Vosk)")
+
+        return audio, text
+
+
+def _text_of(raw_json: str) -> str:
+    try:
+        return json.loads(raw_json).get("text", "").strip()
+    except (ValueError, AttributeError):
+        return ""

@@ -9,7 +9,6 @@ from src.commands import LLM_MARKER, plan_command
 from src.fuzzy import correct
 from src.llm import JarvisLLM, junk_phrase
 from src.logger import get_logger
-from src.stt import VoskSTT
 from src.tts import _get_voice, speak, speak_phrase, stop_speaking
 from src.vad import SpeechRecorder
 from src.wakeword import WakewordDetector
@@ -92,9 +91,13 @@ def run():
     # ── Ядро ──
     llm = JarvisLLM()
     mic = Microphone()
-    stt = VoskSTT()
-    recorder = SpeechRecorder(mic)
-    detector = WakewordDetector(mic)
+
+    # Подписки: wakeword и VAD слушают ОДИН поток одновременно.
+    ww_sub = mic.subscribe()
+    vad_sub = mic.subscribe()
+
+    detector = WakewordDetector(ww_sub)
+    recorder = SpeechRecorder(vad_sub)
 
     # ── Прогрев ──
     logger.info("Прогреваю TTS...")
@@ -123,28 +126,23 @@ def run():
                     text = command_text
                     logger.info("🗣️ Команда из хвоста wakeword: %s", text)
                 else:
-                    # 3. Записываем команду через VAD
-                    audio = recorder.record()
-                    if len(audio) == 0:
+                    # 3. Записываем + распознаём параллельно (VAD + STT)
+                    audio, text = recorder.record()
+                    if not text:
                         continue
 
-                    # 4. Распознаём речь
-                    text = stt.recognize(audio)
-                    if text is None:
-                        continue
-
-                # 5. Фильтруем ложные срабатывания
+                # 4. Фильтруем ложные срабатывания
                 if _is_false_positive(text):
                     logger.warning("[ложное срабатывание — игнор]")
                     continue
 
-                # 5.5. Нечёткое исправление ошибок Vosk
+                # 4.5. Нечёткое исправление ошибок Vosk
                 corrected = correct(text)
                 if corrected != text:
                     logger.info("🔧 ИИ исправил: %r → %r", text, corrected)
                     text = corrected
 
-                # 6. Ищем команду или отправляем в LLM
+                # 5. Ищем команду или отправляем в LLM
                 response, action, phrase_key = plan_command(text, llm)
 
                 if response == LLM_MARKER:

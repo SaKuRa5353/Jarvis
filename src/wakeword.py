@@ -1,4 +1,7 @@
-"""Wakeword 'Джарвис' через Vosk (keyword spotting)."""
+"""Wakeword 'Джарвис' через Vosk (keyword spotting).
+
+Слушает подписку BroadcastBuffer (один общий поток микрофона).
+"""
 
 import json
 import time
@@ -7,7 +10,7 @@ from vosk import KaldiRecognizer, Model
 
 from config import SAMPLE_RATE, WAKE_WORDS
 
-from src.audio import Microphone
+from src.audio import Subscriber
 from src.logger import get_logger
 from src.vosk_model import get_vosk_model
 
@@ -15,20 +18,19 @@ logger = get_logger("wakeword")
 
 
 class WakewordDetector:
-    """Слушает общий микрофон и ловит обращение 'Джарвис'."""
+    """Слушает подписку микрофона и ловит обращение 'Джарвис'."""
 
     def __init__(
         self,
-        mic: Microphone,
+        sub: Subscriber,
         model: Model | None = None,
         wake_words: tuple[str, ...] = WAKE_WORDS,
         sample_rate: int = SAMPLE_RATE,
     ):
-        self.mic = mic
+        self.sub = sub
         self.model = model or get_vosk_model()
         self.wake_words = wake_words
         self.sample_rate = sample_rate
-        self.block_size = mic.block_size
 
     def _match(self, text: str) -> bool:
         return any(word in text for word in self.wake_words)
@@ -41,11 +43,12 @@ class WakewordDetector:
     def wait(self) -> str:
         """Блокирующе ждёт wakeword. Возвращает распознанную фразу целиком."""
         logger.info("💤 Жду 'Джарвис'...")
-        self.mic.drain()
+        self.sub.drain()
         rec = self._new_recognizer()
 
         while True:
-            frame = self.mic.read(self.block_size)
+            self.sub.check()
+            frame = self.sub.read(self.sample_rate // 10)  # 100 мс
             if not rec.AcceptWaveform(frame.tobytes()):
                 continue
 
@@ -74,7 +77,7 @@ class WakewordDetector:
             True  — услышал wakeword (нужно прервать операцию)
             False — is_done() стал True (операция завершилась сама)
         """
-        self.mic.drain()
+        self.sub.drain()
         rec = self._new_recognizer()
         deadline = time.monotonic() + timeout
 
@@ -83,7 +86,7 @@ class WakewordDetector:
                 return False
 
             try:
-                frame = self.mic.read(self.block_size, timeout=0.5)
+                frame = self.sub.read(self.sample_rate // 10, timeout=0.5)
             except TimeoutError:
                 continue
 
