@@ -2,13 +2,14 @@
 Настройка логирования для Джарвиса.
 
 - Пишет в консоль (с цветом) и в файл logs/jarvis.log
-- Ротация: 5 файлов по 1 MB
+- Ротация: каждый день в полночь, архивы вида jarvis.log.2026-10-20,
+  старше 7 дней удаляются автоматически (TimedRotatingFileHandler).
 - Формат: время | уровень | модуль | сообщение
 """
 
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
+from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
 
@@ -55,12 +56,14 @@ def setup_logging(level: int = logging.INFO):
     console.setFormatter(ColoredFormatter(fmt, datefmt=datefmt))
     root.addHandler(console)
 
-    # ── Файл (без цвета) ──
-    file_handler = RotatingFileHandler(
+    # ── Файл (ротация по времени: ежедневно, архив старше 7 дней) ──
+    # when="midnight" даёт суффикс %Y-%m-%d: jarvis.log.2026-10-20
+    file_handler = TimedRotatingFileHandler(
         LOG_FILE,
-        maxBytes=1_000_000,     # 1 MB
-        backupCount=5,          # 5 файлов истории
+        when="midnight",        # каждый день в полночь
+        backupCount=7,          # хранить 7 архивов
         encoding="utf-8",
+        utc=True,
     )
     file_handler.setLevel(logging.INFO)    # INFO вместо DEBUG
     file_handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
