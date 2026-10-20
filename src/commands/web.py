@@ -1,6 +1,5 @@
-"""Веб-команды: быстрые ссылки, поиск в гугле."""
-
 import re
+
 from urllib.parse import quote
 
 from src.commands.utils import open_url
@@ -28,6 +27,28 @@ QUICK_LINKS = {
     "депсик": "https://chat.deepseek.com/",
 }
 
+# Глаголы, с которыми ссылка открывается, а не ищется
+_OPEN_WORDS = ("открой", "открыть", "запусти", "включи", "иди на", "перейди")
+
+# Ключи-омонимы («века» = возраст слова «век») — только с глаголом.
+_NEED_VERB = {"века", "вэ ка"}
+
+# Короткие ключи (≤ 3 букв) обязаны совпадать как отдельное слово:
+# иначе «включи свет» матчится по подстроке «вк» и открывает ВКонтакте.
+_SHORT_KEYS = frozenset(kw for kw in QUICK_LINKS if len(kw) <= 3)
+_WORD_RE_CACHE: dict[str, re.Pattern] = {}
+
+
+def _match_link(text: str, keyword: str) -> bool:
+    """Короткие ключи — только как отдельное слово, длинные — как подстрока."""
+    if keyword not in _SHORT_KEYS:
+        return keyword in text
+    pat = _WORD_RE_CACHE.get(keyword)
+    if pat is None:
+        pat = re.compile(rf"(?:^|\W){re.escape(keyword)}(?:$|\W)")
+        _WORD_RE_CACHE[keyword] = pat
+    return pat.search(text) is not None
+
 
 # Vosk small-ru слышит «загугли» по-разному: «загугли», «за гугли»,
 # «за гугле», «загули» — поэтому вариант с пробелом тоже здесь.
@@ -51,16 +72,9 @@ def _extract_search_query(text: str) -> str | None:
     return None
 
 
-# Глаголы, после которых ключевое слово точно означает ссылку.
-_OPEN_WORDS = ("открой", "открыть", "запусти", "включи", "иди на", "перейди")
-
-# Ключи-омонимы («века» = возраст слова «век») — только с глаголом.
-_NEED_VERB = {"века", "вэ ка"}
-
-
 def _try_quick_link(text: str):
     for keyword, url in QUICK_LINKS.items():
-        if keyword not in text:
+        if not _match_link(text, keyword):
             continue
         # «открой ютуб» — явная команда;
         # просто «ютуб» (1-2 слова) — пользователь имел в виду то же самое.

@@ -3,13 +3,21 @@
 Vosk small-ru ослышается: «тонкость» вместо «громкость», «эдип сик»
 вместо «дипсик». Функция `correct()` заменяет распознанные слова
 на известные триггеры команд с помощью difflib.get_close_matches
-(порог 0.75).
+(порог 0.70).
 
 Работает ТОЛЬКО с неизвестными словами — если слово уже в словаре,
 не трогаем. Это защищает от «включи» → «выключи».
 """
 
 import difflib
+
+# Известные искажения Vosk, которые difflib не ловит из-за
+# многозначности коротких слов или раздельного написания.
+_VOSK_FIXES = {
+    "вэ ка": "вк",
+    "века": "вк",
+    "вэка": "вк",
+}
 
 # Все однословные триггеры команд — из apps, system, web, sensors, weather.
 # difflib.get_close_matches ищет именно по этому множеству.
@@ -52,6 +60,11 @@ KNOWN = frozenset((
     "про",
 ))
 
+# Минимальная длина слова для fuzzy-поиска: короткие слова (≤ 5 букв)
+# часто являются полноценными русскими словами, а не ошибками —
+# «год»→«погод», «покой»→«открой» и т.п.
+_MIN_CORRECT_LEN = 6
+
 
 def correct(text: str, threshold: float = 0.70) -> str:
     """Заменяет распознанные слова на известные триггеры.
@@ -59,13 +72,19 @@ def correct(text: str, threshold: float = 0.70) -> str:
     Пример: «тонкость выше» → «громкость выше».
     Известные слова не трогаем — защищаемся от «включи» → «выключи».
     """
+    # 1. Явные замены Vosk-искажений (многословные и короткие)
+    for bad, good in _VOSK_FIXES.items():
+        if bad in text:
+            text = text.replace(bad, good, 1)
+            break  # одна замена на фразу — достаточно
+
     words = text.split()
     if not words:
         return text
 
     corrected = []
     for w in words:
-        if w in KNOWN:
+        if w in KNOWN or len(w) < _MIN_CORRECT_LEN:
             corrected.append(w)
         else:
             match = difflib.get_close_matches(w, KNOWN, n=1, cutoff=threshold)
