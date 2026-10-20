@@ -80,19 +80,69 @@ def _process_command(
             logger.error("[action error] %s", e)
 
 
-def _run_conversation(
-    llm,
-    detector,
-    recorder,
+def _process_command_dialog(
+    text: str,
+    llm: JarvisLLM,
     plan_command_func,
     _ask_fn,
     _speak_fn,
     _get_window_ctx,
 ):
+    """Обрабатывает команду в режиме диалога (без прерывания по wakeword)."""
+    # Фильтруем ложные срабатывания
+    if _is_false_positive(text):
+        logger.warning("[ложное срабатывание — игнор]")
+        return
+
+    # Нечёткое исправление ошибок Vosk
+    corrected = correct(text)
+    if corrected != text:
+        logger.info("🔧 ИИ исправил: %r → %r", text, corrected)
+        text = corrected
+
+    # Ищем команду или отправляем в LLM
+    response, action, phrase_key = plan_command_func(text, llm)
+
+    if response == LLM_MARKER:
+        speak_phrase("llm_thinking")
+        logger.info("🤔 Думаю (LLM)...")
+        context = _get_window_ctx()
+        if context:
+            logger.info("📎 %s", context)
+        answer = _ask_fn(llm, text, context)
+        if answer:
+            phrase_key = junk_phrase(answer)
+            if phrase_key:
+                logger.info("🔹 Мусорный ответ — играю фразу: %s", phrase_key)
+            _speak_fn(answer, phrase_key)
+        return
+
+    if response is None and action is None:
+        return
+
+    if response is not None:
+        _speak_fn(response, phrase_key)
+    if action is not None:
+        try:
+            action()
+        except Exception as e:
+            logger.error("[action error] %s", e)
+
+
+def _run_conversation(
+    llm,
+    detector,
+    recorder,
+    plan_command_func,
+):
     """Режим диалога: 15 сек без «Джарвис».
 
     Слушает фразы через wakeword-детектор. Если видит wakeword —
     прерывает диалог. Если видит команду — обрабатывает.
+
+    ВАЖНО: используем версии без прерывания (_speak_no_interrupt /
+    _ask_no_interrupt), чтобы не создавать второй читатель на ww_sub —
+    внешний цикл и так ловит «Джарвис» и выходит из диалога.
     """
     logger.info("💬 Режим диалога: %d сек", CONVERSATION_TIMEOUT_SEC)
     deadline = time.monotonic() + CONVERSATION_TIMEOUT_SEC
@@ -107,10 +157,11 @@ def _run_conversation(
                 interrupted = True
                 break
 
-            # Обработка команды
-            _process_command(
-                text, llm, detector, plan_command_func,
-                _ask_fn, _speak_fn, _get_window_ctx,
+            # Обработка команды (без прерывания по wakeword)
+            _process_command_dialog(
+                text, llm, plan_command_func,
+                _ask_no_interrupt, _speak_no_interrupt,
+                get_window_context,
             )
 
         if interrupted:
@@ -168,6 +219,16 @@ def _speak_with_interrupt(detector: WakewordDetector, text: str, phrase_key: str
         logger.info("🛑 TTS прерван — начинаем заново")
 
     tts_thread.join(timeout=1)
+
+
+def _speak_no_interrupt(text: str, phrase_key: str | None = None):
+    """Говорит текст без прерывания (для режима диалога, где один читатель ww_sub)."""
+    speak(text, phrase_key)
+
+
+def _ask_no_interrupt(llm: JarvisLLM, text: str, context: str | None = None) -> str | None:
+    """Запрос в LLM без прерывания (для режима диалога)."""
+    return llm.ask(text, context=context)
 
 
 def _warmup_llm(llm: JarvisLLM):
@@ -234,12 +295,11 @@ def run():
                     get_window_context,
                 )
 
-                # 5. Режим диалога — слушаем следующие 15 сек без «Джарвис»
-                speak_phrase("done")
+                # 5. Режим диалога — слушаем следующие 15 сек без «Джарвис».
+                #    Фраза-подтверждение не играется: команду уже озвучил
+                #    _process_command, а после LLM-ответа реплика и так есть.
                 _run_conversation(
                     llm, detector, recorder, plan_command,
-                    _ask_with_interrupt, _speak_with_interrupt,
-                    get_window_context,
                 )
 
             except MicrophoneError as e:

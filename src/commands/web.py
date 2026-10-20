@@ -18,6 +18,8 @@ QUICK_LINKS = {
     # Vosk слышит «ВК» как «вэ ка» / «века»
     "вэ ка": "https://vk.com/feed",
     "века": "https://vk.com/feed",
+    # Vosk может распознать «ВКонтакте» как одно слово
+    "вконтакте": "https://vk.com/feed",
     "дипсик": "https://chat.deepseek.com/",
     "дипсика": "https://chat.deepseek.com/",
     "дип сик": "https://chat.deepseek.com/",
