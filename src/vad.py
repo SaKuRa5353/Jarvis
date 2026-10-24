@@ -101,13 +101,7 @@ class SpeechRecorder:
 
 
 def _text_of(raw_json: str) -> str:
-    try:
-        return json.loads(raw_json).get("text", "").strip()
-    except (ValueError, AttributeError):
-        return ""
-
-
-def _text_of(raw_json: str) -> str:
+    """Извлекает распознанный текст из JSON-ответа Vosk."""
     try:
         return json.loads(raw_json).get("text", "").strip()
     except (ValueError, AttributeError):
