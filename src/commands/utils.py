@@ -1,28 +1,6 @@
 """Общие хелперы для команд."""
 
-import subprocess
-
-from src.logger import get_logger
-
-logger = get_logger("commands.utils")
-
-
-def open_url(url: str):
-    """Открывает URL в браузере по умолчанию."""
-    subprocess.Popen(
-        ["xdg-open", url],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-
-
-def run(cmd: list[str]):
-    """Запускает команду в фоне, не дожидаясь завершения."""
-    subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+from src.actions import open_url, run  # noqa: F401  (реэкспорт для совместимости)
 
 
 def plural(n: int, one: str, few: str, many: str) -> str:

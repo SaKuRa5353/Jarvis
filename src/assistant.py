@@ -1,8 +1,12 @@
 """Оркестратор — главный цикл ассистента с прерыванием.
 
 Режим диалога: после первого обращения (wake word + команда) ассистент
-остается «на связи» и слушает следующие 15 секунд без повторного «Джарвис».
+остаётся «на связи» и слушает следующие 15 секунд без повторного «Джарвис».
 Если за это время пользователь скажет «Джарвис» — диалог прерывается.
+
+Фразы-филлеры не тормозят обработку: LLM-запрос стартует немедленно,
+а «Секунду» / «К вашим услугам» играют параллельно размышлению.
+Длинные ответы озвучиваются по предложениям во время генерации LLM.
 """
 
 import threading
@@ -14,9 +18,16 @@ from config import CONVERSATION_TIMEOUT_SEC
 from src.audio import Microphone, MicrophoneError
 from src.commands import LLM_MARKER, plan_command
 from src.fuzzy import correct
-from src.llm import JarvisLLM, junk_phrase
+from src.llm import JarvisLLM
 from src.logger import get_logger
-from src.tts import _get_voice, speak, speak_phrase, stop_speaking
+from src.metrics import metrics
+from src.tts import (
+    SentenceSpeaker,
+    _get_voice,
+    speak,
+    speak_phrase,
+    stop_speaking,
+)
 from src.vad import SpeechRecorder
 from src.wakeword import WakewordDetector
 from src.window_context import get_window_context
@@ -30,44 +41,29 @@ def _is_false_positive(text: str) -> bool:
     return len(normalized.split()) <= 1 and "джарвис" in normalized
 
 
-def _process_command(
-    text: str,
-    llm: JarvisLLM,
-    detector: WakewordDetector,
-    plan_command_func,
-    _ask_fn,
-    _speak_fn,
-    _get_window_ctx,
-):
-    """Обрабатывает одну команду: ищет правило → LLM → ответ."""
-    # Фильтруем ложные срабатывания
+# ──────────────────── РАЗМЫШЛЕНИЕ И ВЫДАЧА ────────────────────
+
+
+def _plan_reply(text: str, llm: JarvisLLM, plan_command_func):
+    """Размышление над репликой: фильтр, fuzzy-correct, поиск по правилам.
+
+    Возвращает (corrected, response, action, phrase_key) или None,
+    если реплика отброшена как ложное срабатывание.
+    """
     if _is_false_positive(text):
         logger.warning("[ложное срабатывание — игнор]")
-        return
+        return None
 
-    # Нечёткое исправление ошибок Vosk
     corrected = correct(text)
     if corrected != text:
         logger.info("🔧 ИИ исправил: %r → %r", text, corrected)
-        text = corrected
 
-    # Ищем команду или отправляем в LLM
-    response, action, phrase_key = plan_command_func(text, llm)
+    response, action, phrase_key = plan_command_func(corrected, llm)
+    return corrected, response, action, phrase_key
 
-    if response == LLM_MARKER:
-        speak_phrase("llm_thinking")
-        logger.info("🤔 Думаю (LLM)...")
-        context = _get_window_ctx()
-        if context:
-            logger.info("📎 %s", context)
-        answer = _ask_fn(llm, detector, text, context)
-        if answer:
-            phrase_key = junk_phrase(answer)
-            if phrase_key:
-                logger.info("🔹 Мусорный ответ — играю фразу: %s", phrase_key)
-            _speak_fn(detector, answer, phrase_key)
-        return
 
+def _run_plan(response, action, phrase_key, detector, _speak_fn):
+    """Исполняет готовый план: реплика + действие."""
     if response is None and action is None:
         return
 
@@ -80,53 +76,224 @@ def _process_command(
             logger.error("[action error] %s", e)
 
 
-def _process_command_dialog(
+def _speak_llm_answer(ask: "_AskHandle", detector, _speak_fn):
+    """Озвучивает результат LLM-запроса (handle завершён или брошен).
+
+    Длинные ответы уже озвучены стримингом — остаётся хвост (finish).
+    Короткие и мусорные идут обычным путём: готовая фраза или speak().
+    """
+    if ask.abandoned:
+        return
+    result = ask.result()
+    if not result:
+        ask.speaker.stop()
+        return
+    answer, phrase_key = result
+
+    already = ask.speaker.started()
+    ask.speaker.finish()  # договаривает хвост, если озвучка началась
+    if already:
+        return
+
+    if phrase_key == "not_listened":
+        logger.info("🔹 Мусорный ответ — играю фразу: %s", phrase_key)
+    _speak_fn(detector, answer, phrase_key)
+
+
+def _process_command(
     text: str,
     llm: JarvisLLM,
+    detector: WakewordDetector,
     plan_command_func,
     _ask_fn,
     _speak_fn,
     _get_window_ctx,
 ):
-    """Обрабатывает команду в режиме диалога (без прерывания по wakeword)."""
-    # Фильтруем ложные срабатывания
-    if _is_false_positive(text):
-        logger.warning("[ложное срабатывание — игнор]")
+    """Обрабатывает одну команду: правила → LLM → ответ."""
+    plan = _plan_reply(text, llm, plan_command_func)
+    if plan is None:
         return
-
-    # Нечёткое исправление ошибок Vosk
-    corrected = correct(text)
-    if corrected != text:
-        logger.info("🔧 ИИ исправил: %r → %r", text, corrected)
-        text = corrected
-
-    # Ищем команду или отправляем в LLM
-    response, action, phrase_key = plan_command_func(text, llm)
+    corrected, response, action, phrase_key = plan
 
     if response == LLM_MARKER:
-        speak_phrase("llm_thinking")
         logger.info("🤔 Думаю (LLM)...")
         context = _get_window_ctx()
         if context:
             logger.info("📎 %s", context)
-        answer = _ask_fn(llm, text, context)
-        if answer:
-            phrase_key = junk_phrase(answer)
-            if phrase_key:
-                logger.info("🔹 Мусорный ответ — играю фразу: %s", phrase_key)
-            _speak_fn(answer, phrase_key)
+        # Запрос стартует сразу; фраза «Секунду» играет параллельно ему.
+        ask = _ask_fn(llm, detector, corrected, context, thinking_phrase="llm_thinking")
+        _speak_llm_answer(ask, detector, _speak_fn)
         return
 
-    if response is None and action is None:
-        return
+    _run_plan(response, action, phrase_key, detector, _speak_fn)
 
-    if response is not None:
-        _speak_fn(response, phrase_key)
-    if action is not None:
+
+def _process_tail_command(
+    text: str,
+    llm: JarvisLLM,
+    detector: WakewordDetector,
+    plan_command_func,
+    _get_window_ctx,
+):
+    """Команда, сказанная вместе с обращением («Джарвис, открой код»).
+
+    Правила и LLM-запрос стартуют немедленно и идут параллельно
+    приветствию — ответ готов почти сразу после «К вашим услугам».
+    """
+    box: dict = {}
+
+    def _think():
         try:
-            action()
-        except Exception as e:
-            logger.error("[action error] %s", e)
+            plan = _plan_reply(text, llm, plan_command_func)
+            if plan is None:
+                return
+            corrected, response, *_ = plan
+            if response == LLM_MARKER:
+                context = _get_window_ctx()
+                if context:
+                    logger.info("📎 %s", context)
+                logger.info("🤔 Думаю (LLM)...")
+                box["ask"] = _AskHandle(llm, corrected, context)
+            box["plan"] = plan
+        except Exception:
+            logger.error("⚠️ Ошибка размышления: %s", traceback.format_exc())
+
+    thread = threading.Thread(target=_think, daemon=True)
+    thread.start()
+
+    # Приветствие играет, пока в фоне идут правила и LLM.
+    speak_phrase("welcome")
+    thread.join()
+
+    plan = box.get("plan")
+    if plan is None:
+        return
+    corrected, response, action, phrase_key = plan
+
+    if response == LLM_MARKER:
+        ask: _AskHandle | None = box.get("ask")
+        if ask is None:
+            return
+        # LLM ещё думает после приветствия — заполняем паузу фразой.
+        if not ask.done:
+            speak_phrase("llm_thinking")
+        if detector.wait_or_done(lambda: ask.done, timeout=30.0):
+            logger.info("🛑 LLM прервана — начинаем заново")
+            ask.abandoned = True
+            ask.stop_audio()
+            return
+        _speak_llm_answer(ask, detector, _speak_with_interrupt)
+        return
+
+    _run_plan(response, action, phrase_key, detector, _speak_with_interrupt)
+
+
+# ──────────────────── LLM-ЗАПРОСЫ ────────────────────
+
+
+class _AskHandle:
+    """Запущенный LLM-запрос: стартует немедленно, результат забирают позже.
+
+    Длинный ответ озвучивается по предложениям прямо во время генерации
+    (SentenceSpeaker). Пока модель думает, можно играть фразу-филлер
+    или приветствие — воспроизведение выстроено в общую очередь.
+    """
+
+    def __init__(self, llm: JarvisLLM, text: str, context: str | None = None):
+        self._answer: tuple[str, str | None] | None = None
+        self._error: Exception | None = None
+        self.done = False
+        self.abandoned = False  # прерван по wakeword — озвучку погасить
+        self.speaker = SentenceSpeaker()
+
+        def _do_ask():
+            try:
+                self._answer = llm.ask(text, context=context, on_delta=self.speaker.feed)
+            except Exception as e:
+                self._error = e
+            finally:
+                self.done = True
+
+        self.thread = threading.Thread(target=_do_ask, daemon=True)
+        self.thread.start()
+
+    def result(self) -> tuple[str, str | None] | None:
+        """Ответ LLM; None при ошибке (ошибка логируется здесь же)."""
+        if self._error is not None:
+            logger.error("[LLM error] %s", self._error)
+            return None
+        return self._answer
+
+    def stop_audio(self):
+        """Гасит стриминговую озвучку (прерывание по wakeword)."""
+        self.speaker.stop()
+
+
+def _ask_with_interrupt(
+    llm: JarvisLLM,
+    detector: WakewordDetector,
+    text: str,
+    context: str | None = None,
+    thinking_phrase: str | None = None,
+) -> "_AskHandle":
+    """LLM-запрос с прерыванием по wakeword.
+
+    Запрос стартует немедленно; фраза-филлер играет параллельно ожиданию.
+    Возвращает handle — завершённый или брошенный (abandoned, озвучку
+    которого уже погасили).
+    """
+    ask = _AskHandle(llm, text, context)
+    if thinking_phrase:
+        speak_phrase(thinking_phrase)
+
+    if detector.wait_or_done(lambda: ask.done, timeout=30.0):
+        logger.info("🛑 LLM прервана — начинаем заново")
+        ask.stop_audio()
+        ask.abandoned = True
+    return ask
+
+
+def _ask_no_interrupt(
+    llm: JarvisLLM,
+    _detector: WakewordDetector,
+    text: str,
+    context: str | None = None,
+    thinking_phrase: str | None = None,
+) -> "_AskHandle":
+    """LLM-запрос без прерывания (для режима диалога). Фраза — параллельно."""
+    ask = _AskHandle(llm, text, context)
+    if thinking_phrase:
+        speak_phrase(thinking_phrase)
+    ask.thread.join()
+    return ask
+
+
+# ──────────────────── ОЗВУЧКА ────────────────────
+
+
+def _speak_with_interrupt(detector: WakewordDetector, text: str, phrase_key: str | None = None):
+    """Говорит текст, но если услышит 'Джарвис' — прерывает."""
+    tts_thread = threading.Thread(target=speak, args=(text, phrase_key), daemon=True)
+    tts_thread.start()
+
+    interrupted = detector.wait_or_done(
+        lambda: not tts_thread.is_alive(),
+        timeout=30.0,
+    )
+
+    if interrupted:
+        stop_speaking()
+        logger.info("🛑 TTS прерван — начинаем заново")
+
+    tts_thread.join(timeout=1)
+
+
+def _speak_no_interrupt(_detector: WakewordDetector, text: str, phrase_key: str | None = None):
+    """Говорит текст без прерывания (для режима диалога, где один читатель ww_sub)."""
+    speak(text, phrase_key)
+
+
+# ──────────────────── РЕЖИМ ДИАЛОГА ────────────────────
 
 
 def _run_conversation(
@@ -158,8 +325,8 @@ def _run_conversation(
                 break
 
             # Обработка команды (без прерывания по wakeword)
-            _process_command_dialog(
-                text, llm, plan_command_func,
+            _process_command(
+                text, llm, detector, plan_command_func,
                 _ask_no_interrupt, _speak_no_interrupt,
                 get_window_context,
             )
@@ -171,64 +338,7 @@ def _run_conversation(
     return False  # таймаут → начинаем новый цикл с «К вашим услугам»
 
 
-def _ask_with_interrupt(
-    llm: JarvisLLM,
-    detector: WakewordDetector,
-    text: str,
-    context: str | None = None,
-) -> str | None:
-    """Отправляет запрос в LLM, но прерывает по wakeword."""
-    result = {"answer": None, "done": False, "error": None}
-
-    def _do_ask():
-        try:
-            result["answer"] = llm.ask(text, context=context)
-        except Exception as e:
-            result["error"] = e
-        finally:
-            result["done"] = True
-
-    thread = threading.Thread(target=_do_ask, daemon=True)
-    thread.start()
-
-    interrupted = detector.wait_or_done(lambda: result["done"], timeout=30.0)
-
-    if interrupted:
-        logger.info("🛑 LLM прервана — начинаем заново")
-        return None
-
-    thread.join(timeout=1)
-    if result["error"]:
-        logger.error("[LLM error] %s", result["error"])
-        return None
-    return result["answer"]
-
-
-def _speak_with_interrupt(detector: WakewordDetector, text: str, phrase_key: str | None = None):
-    """Говорит текст, но если услышит 'Джарвис' — прерывает."""
-    tts_thread = threading.Thread(target=speak, args=(text, phrase_key), daemon=True)
-    tts_thread.start()
-
-    interrupted = detector.wait_or_done(
-        lambda: not tts_thread.is_alive(),
-        timeout=30.0,
-    )
-
-    if interrupted:
-        stop_speaking()
-        logger.info("🛑 TTS прерван — начинаем заново")
-
-    tts_thread.join(timeout=1)
-
-
-def _speak_no_interrupt(text: str, phrase_key: str | None = None):
-    """Говорит текст без прерывания (для режима диалога, где один читатель ww_sub)."""
-    speak(text, phrase_key)
-
-
-def _ask_no_interrupt(llm: JarvisLLM, text: str, context: str | None = None) -> str | None:
-    """Запрос в LLM без прерывания (для режима диалога)."""
-    return llm.ask(text, context=context)
+# ──────────────────── ГЛАВНЫЙ ЦИКЛ ────────────────────
 
 
 def _warmup_llm(llm: JarvisLLM):
@@ -273,27 +383,31 @@ def run():
             try:
                 # 1. Ждём обращения
                 wake_text = detector.wait()
-                speak_phrase("welcome")
 
                 # 2. Если пользователь сказал «Джарвис, открой код» —
-                #    хвост фразы обрабатываем сразу, не тратя время на VAD.
+                #    команда уже здесь: размышление и LLM-запрос стартуют
+                #    сразу, параллельно приветствию (VAD не нужен).
                 command_text = detector.strip_wakeword(wake_text).strip()
 
                 if command_text:
-                    text = command_text
-                    logger.info("🗣️ Команда из хвоста wakeword: %s", text)
+                    logger.info("🗣️ Команда из хвоста wakeword: %s", command_text)
+                    _process_tail_command(
+                        command_text, llm, detector, plan_command,
+                        get_window_context,
+                    )
                 else:
-                    # 3. Записываем + распознаём параллельно (VAD + STT)
+                    # 3. Приветствие, затем запись + распознавание (VAD + STT)
+                    speak_phrase("welcome")
                     audio, text = recorder.record()
                     if not text:
                         continue
 
-                # 4. Обрабатываем команду
-                _process_command(
-                    text, llm, detector, plan_command,
-                    _ask_with_interrupt, _speak_with_interrupt,
-                    get_window_context,
-                )
+                    # 4. Обрабатываем команду
+                    _process_command(
+                        text, llm, detector, plan_command,
+                        _ask_with_interrupt, _speak_with_interrupt,
+                        get_window_context,
+                    )
 
                 # 5. Режим диалога — слушаем следующие 15 сек без «Джарвис».
                 #    Фраза-подтверждение не играется: команду уже озвучил
@@ -306,6 +420,7 @@ def run():
                 logger.error("⚠️ Микрофон: %s — перезапуск через 3 сек", e)
                 time.sleep(3)
             except KeyboardInterrupt:
+                metrics.log_report()
                 logger.info("\n👋 Выход")
                 break
             except Exception:

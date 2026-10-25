@@ -2,6 +2,7 @@
 
 from src.llm import JarvisLLM
 from src.logger import get_logger
+from src.metrics import timed
 
 from src.commands import apps, hardware, sensors, system, weather, web
 
@@ -19,6 +20,7 @@ _LLM_HANDLERS = [hardware]
 
 LLM_MARKER = "__LLM__"
 
+@timed("commands.plan_command")
 def plan_command(text: str, llm: JarvisLLM):
     """Возвращает (response_text, action_callable, phrase_key) или (None, None, None).
 

@@ -1,14 +1,32 @@
-"""Silero TTS (локальный) + mpv с возможностью прерывания."""
+"""Silero TTS (локальный) + mpv с возможностью прерывания.
 
+Синтез кэшируется на диск: hash(текст) → WAV в data/tts_cache, поэтому
+повторные ответы играются мгновенно. Длинные ответы озвучиваются
+по предложениям ещё во время генерации LLM (SentenceSpeaker).
+"""
+
+import hashlib
+import queue
+import re
 import subprocess
 import threading
-import re
+import time
 from pathlib import Path
+
 from silero_tts.silero_tts import SileroTTS
 
-from config import SILERO_MODEL, SILERO_SAMPLE_RATE, SILERO_SPEAKER, TTS_WAV
+from config import (
+    SILERO_MODEL,
+    SILERO_SAMPLE_RATE,
+    SILERO_SPEAKER,
+    TTS_CACHE_DIR,
+    TTS_CACHE_MAX_FILES,
+    TTS_STREAM_MIN_CHARS,
+)
 
+from src.audio import pause_input, resume_input
 from src.logger import get_logger
+from src.metrics import timed
 from src.phrases import get_phrase_path, PHRASES
 
 logger = get_logger("tts")
@@ -19,8 +37,49 @@ logger = get_logger("tts")
 _tts = None
 _current_mpv: subprocess.Popen | None = None
 _mpv_lock = threading.Lock()
+_play_lock = threading.Lock()  # воспроизведения строго по очереди
 
 
+# ──────────────────────── ВОСПРОИЗВЕДЕНИЕ ────────────────────────
+
+
+@timed("tts._play_now")
+def _play_now(path: str | Path):
+    """Проигрывает WAV через mpv с эхо-паузой микрофона.
+
+    Пока играет — вход заглушен, чтобы Джарвис не распознавал
+    собственный голос как команды. resume строго в finally.
+    """
+    global _current_mpv
+    pause_input()
+    try:
+        with _mpv_lock:
+            _current_mpv = subprocess.Popen(
+                ["mpv", "--no-terminal", "--really-quiet", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            mpv = _current_mpv
+        mpv.wait()
+        with _mpv_lock:
+            if _current_mpv is mpv:
+                _current_mpv = None
+        time.sleep(0.2)  # «хвост» эха в комнате/звуковом буфере
+    finally:
+        resume_input()
+
+
+def _play_file(path: str | Path):
+    """Ставит воспроизведение в общую очередь.
+
+    Фраза-филлер, предложения стриминга и финальная реплика не
+    накладываются друг на друга: _play_lock выстраивает их по порядку.
+    """
+    with _play_lock:
+        _play_now(path)
+
+
+@timed("tts._get_voice")
 def _get_voice() -> SileroTTS:
     global _tts
     if _tts is None:
@@ -52,7 +111,39 @@ def stop_speaking():
         _current_mpv = None
 
 
+# ──────────────────────── КЭШ СИНТЕЗА ────────────────────────
+
+
+def _cache_path(text: str) -> Path:
+    """Путь WAV в кэше для текста (подразумевается уже после _fix_text)."""
+    key = hashlib.sha256(text.encode("utf-8")).hexdigest()[:20]
+    return TTS_CACHE_DIR / f"{key}.wav"
+
+
+def _trim_cache():
+    """Держит кэш в пределах TTS_CACHE_MAX_FILES (удаляет старые по mtime)."""
+    try:
+        files = list(TTS_CACHE_DIR.glob("*.wav"))
+        if len(files) <= TTS_CACHE_MAX_FILES:
+            return
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in files[TTS_CACHE_MAX_FILES:]:
+            old.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning("[TTS] чистка кэша не удалась: %s", e)
+
+
+@timed("tts._synthesize")
+def _synthesize(text: str, path: Path):
+    """Синтезирует текст в WAV-файл кэша."""
+    TTS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    tts = _get_voice()
+    tts.tts(text, str(path))
+    _trim_cache()
+
+
 # ──────────────────────── ОЧИСТКА ТЕКСТА ────────────────────────
+
 
 def _fix_text(text: str) -> str:
     """Исправляет ударения и чистит символы для Silero."""
@@ -87,6 +178,7 @@ def _fix_text(text: str) -> str:
 
 # ──────────────────────── ФРАЗЫ (0 сек синтеза) ────────────────────────
 
+
 def speak_phrase(key: str) -> bool:
     """Проигрывает готовую фразу из src/phrases/. True если файл найден."""
     path = get_phrase_path(key)
@@ -96,55 +188,152 @@ def speak_phrase(key: str) -> bool:
     text = PHRASES.get(key, (None, "?"))[1]
     logger.info("🔊 Джарвис (фраза): %s", text)
 
-    global _current_mpv
-    with _mpv_lock:
-        _current_mpv = subprocess.Popen(
-            ["mpv", "--no-terminal", "--really-quiet", str(path)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        mpv = _current_mpv
-
-    mpv.wait()
-
-    with _mpv_lock:
-        if _current_mpv is mpv:
-            _current_mpv = None
-
+    _play_file(path)
     return True
 
 
 # ──────────────────────── СИНТЕЗ + ВОСПРОИЗВЕДЕНИЕ ────────────────────────
 
+
+@timed("tts.speak")
 def speak(text: str, phrase_key: str | None = None):
     """Блокирующий синтез + воспроизведение. Прерывается через stop_speaking().
 
     Если phrase_key задан и WAV-файл существует — играет mpv за 0 сек.
-    Иначе — Silero TTS за ~1.5 сек.
+    Иначе — Silero TTS с дисковым кэшем: тот же текст второй раз
+    играет мгновенно, без синтеза.
     """
     if phrase_key and speak_phrase(phrase_key):
         return
 
-    # Fallback — синтез через Silero
-    global _current_mpv
     text = _fix_text(text)
     logger.info("🔊 Джарвис: %s", text)
     try:
-        tts = _get_voice()
-        tts.tts(text, str(TTS_WAV))
-
-        with _mpv_lock:
-            _current_mpv = subprocess.Popen(
-                ["mpv", "--no-terminal", "--really-quiet", str(TTS_WAV)],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            mpv = _current_mpv
-
-        mpv.wait()
-
-        with _mpv_lock:
-            if _current_mpv is mpv:
-                _current_mpv = None
+        wav = _cache_path(text)
+        if not wav.exists():
+            _synthesize(text, wav)
+        _play_file(wav)
     except Exception as e:
         logger.error("[TTS error] %s", e)
+
+
+# ──────────────────────── СТРИМИНГ ОТВЕТА ────────────────────────
+
+# Граница предложения: . ! ? … с закрывающими кавычками/скобками.
+# Точка внутри числа («2.5») границей не считается.
+_SENT_END = re.compile(r"[.!?…]+[\»)\"'\]]*")
+
+
+def _pop_sentences(buf: str) -> tuple[list[str], str]:
+    """Достаёт из буфера завершённые предложения. Возвращает (их, остаток)."""
+    sentences: list[str] = []
+    pos = 0
+    while True:
+        m = _SENT_END.search(buf, pos)
+        if m is None:
+            break
+        end = m.end()
+        if end < len(buf) and buf[end].isdigit():
+            pos = end  # «2.5» — не граница, ищем дальше
+            continue
+        sent = buf[:end].strip()
+        buf = buf[end:].lstrip()
+        pos = 0
+        if sent:
+            sentences.append(sent)
+    return sentences, buf
+
+
+class SentenceSpeaker:
+    """Озвучивает ответ LLM по предложениям, не дожидаясь его конца.
+
+    feed() получает куски текста из стриминга; когда в буфере набралось
+    не меньше TTS_STREAM_MIN_CHARS, готовые предложения синтезируются и
+    уходят в очередь на воспроизведение (синтез — в кэш, как у speak()).
+
+    Короткие ответы (меньше порога) вообще не озвучиваются здесь:
+    они остаются обычному пути speak() — так мусорные ответы
+    («Не расслышал») заменяются готовой фразой, а короткая реплика
+    не рвётся на куски.
+    """
+
+    def __init__(self, min_start_chars: int = TTS_STREAM_MIN_CHARS):
+        self._min_start_chars = min_start_chars
+        self._buf = ""
+        self._spoken = False
+        self._stopped = threading.Event()
+        self._q: "queue.Queue[Path | None]" = queue.Queue()
+        self._player = threading.Thread(target=self._player_loop, daemon=True)
+        self._player.start()
+
+    # ── публичное ──
+
+    def feed(self, delta: str):
+        """Принимает очередной кусок ответа (вызывается из потока LLM)."""
+        if self._stopped.is_set() or not delta:
+            return
+        self._buf += delta
+        if not self._spoken and len(self._buf) < self._min_start_chars:
+            return
+        sentences, self._buf = _pop_sentences(self._buf)
+        for sent in sentences:
+            self._speak_sentence(sent)
+
+    def started(self) -> bool:
+        """Хотя бы одно предложение уже ушло в озвучку."""
+        return self._spoken
+
+    def finish(self):
+        """Договаривает хвост, если озвучка уже началась."""
+        if not self._spoken or self._stopped.is_set():
+            self._close_player()
+            return
+        rest = self._buf.strip()
+        self._buf = ""
+        if rest:
+            self._speak_sentence(rest)
+        self._close_player()
+
+    def stop(self):
+        """Прерывает озвучку: сбрасывает очередь и текущее воспроизведение."""
+        self._stopped.set()
+        self._drain_queue()
+        stop_speaking()
+        self._q.put(None)
+        self._player.join(timeout=2)
+
+    # ── внутреннее ──
+
+    def _speak_sentence(self, sent: str):
+        if self._stopped.is_set():
+            return
+        self._spoken = True
+        try:
+            fixed = _fix_text(sent)
+            wav = _cache_path(fixed)
+            if not wav.exists():
+                _synthesize(fixed, wav)
+            self._q.put(wav)
+        except Exception as e:
+            logger.error("[TTS stream error] %s", e)
+
+    def _player_loop(self):
+        while True:
+            item = self._q.get()
+            if item is None:
+                return
+            with _play_lock:
+                if self._stopped.is_set():
+                    return
+                _play_now(item)
+
+    def _drain_queue(self):
+        while True:
+            try:
+                self._q.get_nowait()
+            except queue.Empty:
+                return
+
+    def _close_player(self):
+        self._q.put(None)
+        self._player.join()

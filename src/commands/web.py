@@ -6,6 +6,7 @@ from src.commands.utils import open_url
 
 
 QUICK_LINKS = {
+    "мудл": "https://moodle2.petrsu.ru/",
     "расписание": "https://petrsu.ru/schedule/term?group=22404",
     "почта": "https://mail.google.com/mail/u/0/#inbox",
     "почту": "https://mail.google.com/mail/u/0/#inbox",
@@ -39,6 +40,25 @@ _NEED_VERB = {"века", "вэ ка"}
 # иначе «включи свет» матчится по подстроке «вк» и открывает ВКонтакте.
 _SHORT_KEYS = frozenset(kw for kw in QUICK_LINKS if len(kw) <= 3)
 _WORD_RE_CACHE: dict[str, re.Pattern] = {}
+
+# ──────────────────── КОНТЕКСТНЫЕ ПЕРЕОПРЕДЕЛЕНИЯ ────────────────────
+# Если в фразе есть «на ютубе» — открываем YouTube, даже если есть
+# другое совпадающее ключевое слово (например, «музыка на ютубе» → YouTube,
+# а не Yandex Music).
+_CONTEXT_OVERRIDES = (
+    ("на ютубе", "youtube"),
+    ("в ютубе", "youtube"),
+    ("ютубе", "youtube"),
+    ("на ютуб", "youtube"),
+    ("в вк", "вк"),
+    ("в контакте", "вк"),
+    ("вконтакте", "вк"),
+    ("на дипсик", "дипсик"),
+    ("в дипсик", "дипсик"),
+    ("в дипсике", "дипсик"),
+    ("на deepseek", "deepseek"),
+    ("в deepseek", "deepseek"),
+)
 
 
 def _match_link(text: str, keyword: str) -> bool:
@@ -75,6 +95,15 @@ def _extract_search_query(text: str) -> str | None:
 
 
 def _try_quick_link(text: str):
+    # 1. Проверяем контекстные переопределения («на ютубе», «в вк» и т.п.)
+    #    Они имеют приоритет над обычными ключевыми словами.
+    for ctx_pattern, override_keyword in _CONTEXT_OVERRIDES:
+        if ctx_pattern in text:
+            if override_keyword in QUICK_LINKS:
+                url = QUICK_LINKS[override_keyword]
+                return f"Открываю {override_keyword}", lambda u=url: open_url(u), "opening"
+
+    # 2. Обычное быстрое сопоставление ссылок
     for keyword, url in QUICK_LINKS.items():
         if not _match_link(text, keyword):
             continue

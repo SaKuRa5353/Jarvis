@@ -21,6 +21,7 @@ from config import (
 
 from src.audio import Subscriber
 from src.logger import get_logger
+from src.metrics import timed
 from src.silero_vad import SileroVAD
 from src.vosk_model import get_vosk_model
 
@@ -45,6 +46,7 @@ class SpeechRecorder:
         self.frame = frame
         self.vad = SileroVAD(sample_rate)
 
+    @timed("vad.record")
     def record(self) -> tuple[np.ndarray, str]:
         """Читает из общего микрофона, пока не наступит тишина.
 

@@ -28,6 +28,28 @@ from src.logger import get_logger
 logger = get_logger("audio")
 
 
+# ──────────────────── ПАУЗА ВХОДА (эхо-защита) ────────────────────
+# Пока Джарвис говорит, его голос из колонки попадает в микрофон и
+# распознаётся как команда («Делаю громче» → снова «громче» → петля).
+# На время воспроизведения фан-аут перестает раздавать блоки.
+
+_input_paused = threading.Event()
+
+
+def pause_input():
+    """Перестать раздавать аудио подписчикам (идёт озвучка)."""
+    _input_paused.set()
+
+
+def resume_input():
+    """Снова раздавать аудио (озвучка закончилась)."""
+    _input_paused.clear()
+
+
+def input_paused() -> bool:
+    return _input_paused.is_set()
+
+
 class BroadcastBuffer:
     """Холдит скользящее окно блоков аудио, раздавая копии подписчикам."""
 
@@ -42,7 +64,13 @@ class BroadcastBuffer:
             self._mic.check()
 
     def push(self, block: bytes):
-        """Добавляет блок и разсылает подписчикам."""
+        """Добавляет блок и разсылает подписчикам.
+
+        Во время паузы (говорит TTS) блок не попадает ни в историю,
+        ни в очереди подписчиков — эхо собственного голоса игнорируется.
+        """
+        if _input_paused.is_set():
+            return
         self._buffer.append(block)
         with self._lock:
             subs = list(self._subscribers)

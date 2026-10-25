@@ -61,7 +61,7 @@ def setup_logging(level: int = logging.INFO):
     file_handler = TimedRotatingFileHandler(
         LOG_FILE,
         when="midnight",        # каждый день в полночь
-        backupCount=7,          # хранить 7 архивов
+        backupCount=2,          # хранить 2 архива
         encoding="utf-8",
         utc=True,
     )
