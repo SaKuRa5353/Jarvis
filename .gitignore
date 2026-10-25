@@ -9,3 +9,8 @@ models/
 .env
 data/
 logs/
+КОНКУРЕНТЫ/
+apply_qw.py
+dump_*.sh
+*.qwbak
+jarvis*.txt
