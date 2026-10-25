@@ -2,11 +2,11 @@
 
 import sounddevice as sd
 import numpy as np
+from config import DEVICE, SAMPLE_RATE  # noqa: E402
 from src.stt import VoskSTT
 
 DURATION = 5
-SR = 16000
-DEVICE = 4
+SR = SAMPLE_RATE  # из config, а не литералом
 
 print(f"Говори {DURATION} секунд... (microphone #{DEVICE})")
 rec = sd.rec(int(DURATION * SR), samplerate=SR, channels=1, dtype='int16', device=DEVICE)

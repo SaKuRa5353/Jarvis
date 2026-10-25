@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from openai import OpenAI
 
 from config import (
+    LLM_MAX_TOKENS,
     LLM_MODEL,
     LLM_NUM_THREADS,
     LLM_SYSTEM_PROMPT,
@@ -91,23 +92,33 @@ class JarvisLLM:
         messages.extend(self.history)
         messages.append({"role": "user", "content": text})
 
+        # tools передаются всегда → фактический лимит LLM_TOOLS_MAX_TOKENS.
+        # LLM_MAX_TOKENS применяется, только если tools отключат.
+        # (До quick wins LLM_MAX_TOKENS не использовался вовсе.)
+        max_tokens = LLM_TOOLS_MAX_TOKENS if TOOLS else LLM_MAX_TOKENS
+
         request = dict(
             model=self.model,
             messages=messages,
             temperature=LLM_TEMPERATURE,
-            max_tokens=LLM_TOOLS_MAX_TOKENS,
+            max_tokens=max_tokens,
             tools=TOOLS,
             tool_choice="auto",
             extra_body={"options": {"num_thread": LLM_NUM_THREADS}},
         )
+        finish_reason: str | None = None
 
         try:
             if on_delta is None:
-                msg = self.client.chat.completions.create(**request).choices[0].message
+                choice = self.client.chat.completions.create(**request).choices[0]
+                msg = choice.message
                 tool_calls = getattr(msg, "tool_calls", None)
                 raw = msg.content
+                finish_reason = getattr(choice, "finish_reason", None)
             else:
-                raw, tool_calls = self._ask_streaming(on_delta=on_delta, **request)
+                raw, tool_calls, finish_reason = self._ask_streaming(
+                    on_delta=on_delta, **request
+                )
 
             if tool_calls:
                 return self._run_tool(tool_calls[0])
@@ -120,6 +131,14 @@ class JarvisLLM:
             return None
         answer = raw.strip()
 
+        # Ответ, обрезанный по max_tokens, озвучивать как полноценный нельзя:
+        # половина фразы звучит как ошибка распознавания.
+        if finish_reason == "length":
+            logger.warning(
+                "[LLM] ответ оборван по max_tokens=%d: %r",
+                request.get("max_tokens", 0), answer[-60:],
+            )
+
         # Не сохраняем мусорные ответы — модель не будет их копировать.
         junk = junk_phrase(answer)
         if junk:
@@ -129,7 +148,7 @@ class JarvisLLM:
         self._append_history(text, answer)
         return answer, None
 
-    def _ask_streaming(self, on_delta, **request) -> tuple[str | None, list | None]:
+    def _ask_streaming(self, on_delta, **request) -> tuple[str | None, list | None, str | None]:
         """Стриминговый запрос: текст уходит в on_delta, tool-вызовы копятся.
 
         Возвращает (текст_ответа, [tool_call] или None). Куски tool-вызова
@@ -137,11 +156,15 @@ class JarvisLLM:
         """
         parts: list[str] = []
         calls: dict[int, dict] = {}
+        finish: str | None = None
 
         for chunk in self.client.chat.completions.create(**request, stream=True):
             if not chunk.choices:
                 continue
-            delta = chunk.choices[0].delta
+            choice = chunk.choices[0]
+            delta = choice.delta
+            if getattr(choice, "finish_reason", None):
+                finish = choice.finish_reason
             if delta is None:
                 continue
             if delta.content:
@@ -163,8 +186,8 @@ class JarvisLLM:
                 id=first["id"],
                 function=SimpleNamespace(name=first["name"], arguments=first["args"]),
             )
-            return None, [call]
-        return "".join(parts), None
+            return None, [call], finish
+        return "".join(parts), None, finish
 
     def _run_tool(self, call) -> tuple[str, str | None]:
         """Выполняет выбранный моделью tool."""

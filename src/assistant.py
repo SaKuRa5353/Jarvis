@@ -9,6 +9,7 @@
 Длинные ответы озвучиваются по предложениям во время генерации LLM.
 """
 
+import atexit
 import threading
 import time
 import traceback
@@ -376,6 +377,11 @@ def run():
     logger.info("=" * 50)
     logger.info("         ДЖАРВИС ЗАПУЩЕН")
     logger.info("=" * 50)
+
+    # Отчёт метрик при любом выходе из процесса (в т.ч. SIGTERM, SystemExit).
+    # reset=False: KeyboardInterrupt в main.py уже мог напечатать отчёт,
+    # а повторная печать очищенного реестра ничего не даёт.
+    atexit.register(lambda: metrics.log_report(reset=False))
 
     # ── Главный цикл ──
     with mic:

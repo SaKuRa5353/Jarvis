@@ -8,13 +8,19 @@
 """
 
 import logging
+import os
 import sys
-from logging.handlers import TimedRotatingFileHandler
-from pathlib import Path
+from logging.handlers import RotatingFileHandler, TimedRotatingFileHandler
 
 
-LOG_DIR = Path("logs")
-LOG_FILE = LOG_DIR / "jarvis.log"
+from config import (
+    LOG_BACKUP_COUNT,
+    LOG_DIR,
+    LOG_FILE_NAME,
+    LOG_MAX_BYTES,
+)
+
+LOG_FILE = LOG_DIR / LOG_FILE_NAME
 
 # Цвета для консоли (ANSI)
 COLORS = {
@@ -36,8 +42,17 @@ class ColoredFormatter(logging.Formatter):
         return super().format(record)
 
 
-def setup_logging(level: int = logging.INFO):
-    """Настраивает root logger. Вызывать один раз при старте."""
+def setup_logging(level: int | str | None = None):
+    """Настраивает root logger. Вызывать один раз при старте.
+
+    level=None → JARVIS_LOG_LEVEL из окружения (по умолчанию INFO).
+    Путь к файлу лога печатается в консоль, чтобы его не искать.
+    """
+    if level is None:
+        level = os.getenv("JARVIS_LOG_LEVEL", "INFO").upper()
+    if isinstance(level, str):
+        level = getattr(logging, level.upper(), logging.INFO)
+
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     root = logging.getLogger()
@@ -58,18 +73,24 @@ def setup_logging(level: int = logging.INFO):
 
     # ── Файл (ротация по времени: ежедневно, архив старше 7 дней) ──
     # when="midnight" даёт суффикс %Y-%m-%d: jarvis.log.2026-10-20
-    file_handler = TimedRotatingFileHandler(
+    # Ротация по размеру: jarvis.log.1 ... jarvis.log.N
+    # (Раньше было TimedRotatingFileHandler(when="midnight", utc=True) —
+    #  из-за utc=True граница суток съезжала на часовой пояс, а backupCount=2
+    #  не соответствовал docstring про «7 дней».)
+    file_handler = RotatingFileHandler(
         LOG_FILE,
-        when="midnight",        # каждый день в полночь
-        backupCount=2,          # хранить 2 архива
+        maxBytes=LOG_MAX_BYTES,
+        backupCount=LOG_BACKUP_COUNT,
         encoding="utf-8",
-        utc=True,
     )
-    file_handler.setLevel(logging.INFO)    # INFO вместо DEBUG
+    file_handler.setLevel(os.getenv("JARVIS_FILE_LOG_LEVEL", "INFO").upper())
     file_handler.setFormatter(logging.Formatter(fmt, datefmt=datefmt))
     root.addHandler(file_handler)
+    print(f"[logs] {LOG_FILE.resolve()}  "
+          f"(уровень файла {logging.getLevelName(file_handler.level)}, "
+          f"{LOG_MAX_BYTES // (1024 * 1024)} МБ x {LOG_BACKUP_COUNT})")
 
-        # ── Приглушаем шумные библиотеки ──
+    # ── Приглушаем шумные библиотеки ──
     for noisy in (
         "httpx2", "httpx",
         "httpcore2", "httpcore",

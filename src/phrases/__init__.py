@@ -36,6 +36,21 @@ PHRASES = {
 
     # ── LLM ──
     "llm_thinking": ("llm_thinking.wav", "Думаю"),
+
+    # ── Earcons: короткие «динь» вместо речевых фраз ──
+    # Включаются CONFIRM_SOUND="earcon" в config.py (или JARVIS_CONFIRM_SOUND).
+    # Создать файлы: python tests/generate_earcons.py
+    "earcon_welcome": ("earcon_welcome.wav", "[динь]"),
+    "earcon_thinking": ("earcon_thinking.wav", "[динь-думает]"),
+    "earcon_done": ("earcon_done.wav", "[динь-готово]"),
+}
+
+# Какие фразы считаются «подтверждением» и заменяются earcon.
+# not_listened / error / volume_* — содержательные, их не трогаем.
+CONFIRM_KEYS = {
+    "welcome": "earcon_welcome",
+    "llm_thinking": "earcon_thinking",
+    "done": "earcon_done",
 }
 
 
@@ -45,3 +60,21 @@ def get_phrase_path(key: str) -> Path | None:
     if entry is None:
         return None
     return PHRASES_DIR / entry[0]
+
+
+def resolve_phrase_key(key: str) -> str | None:
+    """Ключ фразы с учётом CONFIRM_SOUND; None — если звук выключен.
+
+    Если earcon-файла ещё нет (не сгенерирован), возвращает исходный ключ:
+    ассистент не онемеет из-за отсутствующего WAV.
+    """
+    from config import CONFIRM_SOUND  # локально: config не должен зависеть от нас
+
+    mode = (CONFIRM_SOUND or "voice").lower()
+    if mode == "off" and key in CONFIRM_KEYS:
+        return None
+    if mode == "earcon" and key in CONFIRM_KEYS:
+        earcon = CONFIRM_KEYS[key]
+        if (PHRASES_DIR / PHRASES[earcon][0]).exists():
+            return earcon
+    return key

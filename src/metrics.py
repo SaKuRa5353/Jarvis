@@ -63,12 +63,12 @@ class MetricsRegistry:
 
         lines = ["\n📊 ОТЧЁТ МЕТРИК:", "=" * 60]
         lines.append(
-            f"  {'метрика':32} | вызовы | ср.время | мин | макс | всего"
+            f"  {'метрика':44} | вызовы | ср.время | мин | макс | всего"
         )
         lines.append("  " + "-" * 60)
         for name, entry in sorted(self._metrics.items()):
             lines.append(
-                f"  {name:32} | {entry.call_count:6d} | "
+                f"  {name:44} | {entry.call_count:6d} | "
                 f"{entry.avg_time*1000:8.1f}мс | "
                 f"{entry.min_time*1000:6.1f}мс | "
                 f"{entry.max_time*1000:6.1f}мс | "
@@ -77,9 +77,17 @@ class MetricsRegistry:
         lines.append("=" * 60)
         return "\n".join(lines)
 
-    def log_report(self, level: int = logging.INFO) -> None:
-        """Логгирует отчёт по метрикам."""
+    def log_report(self, level: int = logging.INFO, reset: bool = True) -> None:
+        """Логгирует отчёт по метрикам.
+
+        reset=True (по умолчанию) очищает реестр после печати, чтобы отчёт
+        не дублировался при втором вызове (например, atexit после Ctrl-C).
+        """
+        if not reset and not self._metrics:
+            return  # отчёт уже напечатан и реестр очишен — не дублируем
         logger.log(level, self.get_report())
+        if reset:
+            self.reset()
 
     def reset(self) -> None:
         """Сбрасывает все накопленные метрики."""

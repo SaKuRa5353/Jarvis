@@ -16,6 +16,8 @@ from pathlib import Path
 from silero_tts.silero_tts import SileroTTS
 
 from config import (
+    CONFIRM_SOUND,
+    EARCON_TAIL_SEC,
     SILERO_MODEL,
     SILERO_SAMPLE_RATE,
     SILERO_SPEAKER,
@@ -27,7 +29,7 @@ from config import (
 from src.audio import pause_input, resume_input
 from src.logger import get_logger
 from src.metrics import timed
-from src.phrases import get_phrase_path, PHRASES
+from src.phrases import PHRASES, get_phrase_path, resolve_phrase_key
 
 logger = get_logger("tts")
 
@@ -38,6 +40,19 @@ _tts = None
 _current_mpv: subprocess.Popen | None = None
 _mpv_lock = threading.Lock()
 _play_lock = threading.Lock()  # воспроизведения строго по очереди
+
+
+def _echo_tail(path: str | Path) -> float:
+    """Пауза после воспроизведения, чтобы эхо не попало в микрофон.
+
+    Для коротких earcon (~17 КБ) хвост не нужен — экономия ~0.2 с на каждом
+    подтверждении; для секундных речевых фраз оставляем прежние 200 мс.
+    """
+    try:
+        size = Path(path).stat().st_size
+    except OSError:
+        return 0.2
+    return EARCON_TAIL_SEC if size < 30_000 else 0.2
 
 
 # ──────────────────────── ВОСПРОИЗВЕДЕНИЕ ────────────────────────
@@ -64,7 +79,7 @@ def _play_now(path: str | Path):
         with _mpv_lock:
             if _current_mpv is mpv:
                 _current_mpv = None
-        time.sleep(0.2)  # «хвост» эха в комнате/звуковом буфере
+        time.sleep(_echo_tail(path))  # «хвост» эха в комнате/звуковом буфере
     finally:
         resume_input()
 
@@ -180,7 +195,15 @@ def _fix_text(text: str) -> str:
 
 
 def speak_phrase(key: str) -> bool:
-    """Проигрывает готовую фразу из src/phrases/. True если файл найден."""
+    """Проигрывает готовую фразу из src/phrases/. True если файл найден.
+
+    При CONFIRM_SOUND="earcon" подтверждающие фразы (welcome, llm_thinking,
+    done) заменяются коротким звуком; при "off" не звучат вовсе.
+    Остальные ключи (not_listened, error, volume_*) играют как раньше.
+    """
+    key = resolve_phrase_key(key)
+    if key is None:
+        return False
     path = get_phrase_path(key)
     if path is None or not path.exists():
         return False
