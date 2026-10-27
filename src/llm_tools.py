@@ -10,13 +10,101 @@ execute_tool() возвращает (answer_text, phrase_key) либо None, и
 ответы модель даёт обычным текстом (без tool) — их можно стримить.
 """
 
+import ast
 import json
+import math
 from urllib.parse import quote
 
 from src.actions import open_url, run
 from src.logger import get_logger
 
 logger = get_logger("llm_tools")
+
+# ── Математический вычислитель ──
+# Безопасный eval-подобный движок на базе AST: только разрешённые узлы,
+# функции и константы. Никакого произвольного кода — «import os» отвергается.
+
+_MATH_FUNCTIONS = {
+    "sin": math.sin, "cos": math.cos, "tg": math.tan,
+    "sqrt": math.sqrt, "ln": math.log, "exp": math.exp, "abs": abs,
+    "floor": math.floor, "ceil": math.ceil,
+}
+_MATH_NAMES = {"pi": math.pi, "e": math.e}
+
+
+def _eval_math(node: ast.AST, names: dict) -> float | None:
+    if isinstance(node, ast.Expression):
+        return _eval_math(node.body, names)
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, (int, float)) and not isinstance(node.value, bool):
+            return float(node.value)
+        return None
+    if isinstance(node, ast.Name):
+        return float(names[node.id]) if node.id in names else None
+    if isinstance(node, ast.UnaryOp):
+        v = _eval_math(node.operand, names)
+        if v is None:
+            return None
+        if isinstance(node.op, ast.USub):
+            return -v
+        if isinstance(node.op, ast.UAdd):
+            return v
+        return None
+    if isinstance(node, ast.BinOp):
+        left = _eval_math(node.left, names)
+        right = _eval_math(node.right, names)
+        if left is None or right is None:
+            return None
+        if isinstance(node.op, ast.Add):
+            return left + right
+        if isinstance(node.op, ast.Sub):
+            return left - right
+        if isinstance(node.op, ast.Mult):
+            return left * right
+        if isinstance(node.op, ast.Div):
+            if right == 0:
+                return None
+            return left / right
+        if isinstance(node.op, ast.Pow):
+            try:
+                return float(left ** right)
+            except (OverflowError, ValueError, ZeroDivisionError):
+                return None
+        return None
+    if isinstance(node, ast.Call):
+        if not isinstance(node.func, ast.Name) or node.func.id not in _MATH_FUNCTIONS:
+            return None
+        args = []
+        for a in node.args:
+            v = _eval_math(a, names)
+            if v is None:
+                return None
+            args.append(v)
+        try:
+            return float(_MATH_FUNCTIONS[node.func.id](*args))
+        except (ValueError, OverflowError, ZeroDivisionError):
+            return None
+    return None
+
+
+def evaluate_expression(expr: str) -> float | None:
+    """Вычисляет безопасное математическое выражение. None — если невалидно."""
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except (SyntaxError, ValueError):
+        return None
+    result = _eval_math(tree.body, _MATH_NAMES)
+    if result is None or not math.isfinite(result):
+        return None
+    return result
+
+
+def _format_math_answer(result: float) -> str:
+    """Число → строка для ответа (целое без .0)."""
+    if float(result).is_integer():
+        return str(int(result))
+    return f"{result:.6f}".rstrip("0").rstrip(".")
+
 
 # ── Белые списки: canonical name -> (действие, озвучка, фраза) ──
 
@@ -118,6 +206,24 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "calculate",
+            "description": "Вычисли математическое выражение (арифметика, степени, тригонометрия). "
+                           "Использовать для точных вычислений: «сколько будет 2+2», «sin(pi/2)», «(2+3)*4».",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "expression": {
+                        "type": "string",
+                        "description": "Математическое выражение, например «2+2» или «sin(pi/2)»",
+                    },
+                },
+                "required": ["expression"],
+            },
+        },
+    },
 ]
 
 
@@ -171,6 +277,18 @@ def execute_tool(name: str, raw_args) -> tuple[str, str | None] | None:
             run(cmd)
             return answer, phrase
         return None
+
+    if name == "calculate":
+        expr = str(args.get("expression") or "").strip().replace("×", "*").replace("÷", "/").replace("−", "-")
+        if not expr:
+            return None
+        result = evaluate_expression(expr)
+        if result is None:
+            logger.warning("[tool] calculate(%s) — невалидное выражение", expr)
+            return None
+        answer = _format_math_answer(result)
+        logger.info("[tool] calculate(%s) = %s", expr, result)
+        return answer, None
 
     logger.warning("[tool] неизвестный tool: %s", name)
     return None
