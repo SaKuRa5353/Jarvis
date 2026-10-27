@@ -5,8 +5,6 @@
 готов — экономия ~1 секунды на отдельном проходе распознавания.
 """
 
-import json
-
 import numpy as np
 from vosk import KaldiRecognizer
 
@@ -23,7 +21,7 @@ from src.audio import Subscriber
 from src.logger import get_logger
 from src.metrics import timed
 from src.silero_vad import SileroVAD
-from src.vosk_model import get_vosk_model
+from src.vosk_model import get_vosk_model, text_of
 
 logger = get_logger("vad")
 
@@ -93,18 +91,10 @@ class SpeechRecorder:
         audio = np.concatenate(buffer)
         logger.info("✅ Записано %.1f сек", len(audio) / self.sample_rate)
 
-        text = _text_of(rec.FinalResult())
+        text = text_of(rec.FinalResult())
         if text:
             logger.info("📝 Ты: %s", text)
         else:
             logger.warning("❌ Не разобрал (пустой результат Vosk)")
 
         return audio, text
-
-
-def _text_of(raw_json: str) -> str:
-    """Извлекает распознанный текст из JSON-ответа Vosk."""
-    try:
-        return json.loads(raw_json).get("text", "").strip()
-    except (ValueError, AttributeError):
-        return ""

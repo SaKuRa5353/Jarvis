@@ -157,6 +157,53 @@ def _synthesize(text: str, path: Path):
     _trim_cache()
 
 
+# ──────────────────────── НОРМАЛИЗАЦИЯ ЧИСЕЛ ────────────────────────
+
+_ONES = ("", "один", "два", "три", "четыре", "пять", "шесть", "семь", "восемь", "девять")
+_TEENS = (
+    "десять", "одиннадцать", "двенадцать", "тринадцать", "четырнадцать",
+    "пятнадцать", "шестнадцать", "семнадцать", "восемнадцать", "девятнадцать",
+)
+_TENS = (
+    "", "", "двадцать", "тридцать", "сорок", "пятьдесят",
+    "шестьдесят", "семьдесят", "восемьдесят", "девяносто",
+)
+_HUNDREDS = (
+    "", "сто", "двести", "триста", "четыреста", "пятьсот", "шестьсот",
+    "семьсот", "восемьсот", "девятьсот",
+)
+_OPER_WORDS = {"+": "плюс", "×": "умножить", "÷": "делить"}
+_DIGIT_RE = re.compile(r"\d+")
+_OPER_RE = re.compile(r"[+×÷]")
+
+
+def _int_to_words(n: int) -> str:
+    """Целое → русские слова (0–9999)."""
+    if n == 0:
+        return "ноль"
+    if n < 10:
+        return _ONES[n]
+    if n < 20:
+        return _TEENS[n - 10]
+    if n < 100:
+        tens, ones = divmod(n, 10)
+        return _TENS[tens] + (f" {_ONES[ones]}" if ones else "")
+    if n < 1000:
+        hundreds, rest = divmod(n, 100)
+        return _HUNDREDS[hundreds] + (f" {_int_to_words(rest)}" if rest else "")
+    thousands, rest = divmod(n, 1000)
+    head = _int_to_words(thousands) + " тысяч" if thousands > 1 else ("тысяча" if thousands == 1 else "")
+    if not rest:
+        return head
+    return f"{head} {_int_to_words(rest)}".strip()
+
+
+def _normalize_numbers(text: str) -> str:
+    """Нормализация чисел: цифры → слова («23» → «двадцать три», «2+2» → «два плюс два»)."""
+    text = _OPER_RE.sub(lambda m: f" {_OPER_WORDS[m.group(0)]} ", text)
+    return _DIGIT_RE.sub(lambda m: _int_to_words(int(m.group(0))), text)
+
+
 # ──────────────────────── ОЧИСТКА ТЕКСТА ────────────────────────
 
 
@@ -185,6 +232,10 @@ def _fix_text(text: str) -> str:
     }
     for wrong, right in symbol_fixes.items():
         text = text.replace(wrong, right)
+
+    # Нормализация чисел: цифры → слова («23» → «двадцать три», «2+2» → «два плюс два»).
+    text = _normalize_numbers(text)
+
     # Убираем двойные пробелы после замен
     text = re.sub(r"\s+", " ", text).strip()
 
@@ -220,6 +271,9 @@ def speak_phrase(key: str) -> bool:
 
 @timed("tts.speak")
 def speak(text: str, phrase_key: str | None = None):
+    if not text or not text.strip():
+        logger.warning("[TTS] пустой текст — не озвучиваю")
+        return
     """Блокирующий синтез + воспроизведение. Прерывается через stop_speaking().
 
     Если phrase_key задан и WAV-файл существует — играет mpv за 0 сек.

@@ -297,6 +297,9 @@ class Microphone:
             try:
                 data, overflowed = stream.read(self.block_size)
             except Exception as e:
+                if self._stop.is_set():
+                    # штатная остановка — не считаем это падением потока
+                    break
                 self._error = f"поток микрофона упал: {e}"
                 logger.error("[mic] %s", self._error)
                 return

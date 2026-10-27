@@ -14,8 +14,11 @@ from types import SimpleNamespace
 from openai import OpenAI
 
 from config import (
+    LLM_EMPTY_FALLBACK,
     LLM_MAX_TOKENS,
     LLM_MODEL,
+    LLM_THINKING,
+    LLM_THINK_MODE,
     LLM_NUM_THREADS,
     LLM_SYSTEM_PROMPT,
     LLM_TEMPERATURE,
@@ -97,6 +100,18 @@ class JarvisLLM:
         # (До quick wins LLM_MAX_TOKENS не использовался вовсе.)
         max_tokens = LLM_TOOLS_MAX_TOKENS if TOOLS else LLM_MAX_TOKENS
 
+        # Think-параметры собираем ОТДЕЛЬНО от dict(): так не теряется
+        # extra_body с options.num_thread.
+        extra_body: dict = {"options": {"num_thread": LLM_NUM_THREADS}}
+        extra: dict = {}
+        if not LLM_THINKING:
+            if LLM_THINK_MODE == "think":
+                # SDK openai подмешивает extra_body в тело JSON как есть ->
+                # Ollama видит поле "think" верхнего уровня, где и ожидает.
+                extra_body["think"] = False
+            elif LLM_THINK_MODE == "effort":
+                extra["reasoning_effort"] = "none"
+
         request = dict(
             model=self.model,
             messages=messages,
@@ -104,9 +119,11 @@ class JarvisLLM:
             max_tokens=max_tokens,
             tools=TOOLS,
             tool_choice="auto",
-            extra_body={"options": {"num_thread": LLM_NUM_THREADS}},
+            extra_body=extra_body,
+            **extra,
         )
         finish_reason: str | None = None
+        reasoning_text = ""
 
         try:
             if on_delta is None:
@@ -115,6 +132,9 @@ class JarvisLLM:
                 tool_calls = getattr(msg, "tool_calls", None)
                 raw = msg.content
                 finish_reason = getattr(choice, "finish_reason", None)
+                reasoning_text = getattr(msg, "reasoning", None) or getattr(
+                    msg, "reasoning_content", None
+                ) or ""
             else:
                 raw, tool_calls, finish_reason = self._ask_streaming(
                     on_delta=on_delta, **request
@@ -131,12 +151,24 @@ class JarvisLLM:
             return None
         answer = raw.strip()
 
+        # Пустой ответ = thinking съел весь бюджет, content не отдан.
+        # Озвучивать нечего: без подмены TTS синтезирует тишину (~1.5 с).
+        if not answer:
+            logger.warning(
+                "[LLM] пустой ответ (reasoning=%d симв., finish=%s) — "
+                "замена на фразу %s",
+                len(reasoning_text), finish_reason, LLM_EMPTY_FALLBACK,
+            )
+            if reasoning_text:
+                logger.debug("[LLM reasoning] %s", reasoning_text[:300])
+            return "Не расслышал", LLM_EMPTY_FALLBACK
+
         # Ответ, обрезанный по max_tokens, озвучивать как полноценный нельзя:
         # половина фразы звучит как ошибка распознавания.
         if finish_reason == "length":
             logger.warning(
-                "[LLM] ответ оборван по max_tokens=%d: %r",
-                request.get("max_tokens", 0), answer[-60:],
+                "[LLM] ответ оборван по max_tokens=%s: %r",
+                request.get("max_tokens"), answer[-60:],
             )
 
         # Не сохраняем мусорные ответы — модель не будет их копировать.

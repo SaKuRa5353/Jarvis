@@ -279,6 +279,16 @@ python tests/check_window.py           # активное окно через kd
 python tests/check_stt.py              # качество распознавания
 ```
 
+## 🧪 Unit-тесты (pytest)
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Покрывают: fuzzy correction, поиск в гугле, правила команд (`plan_command`),
+готовые фразы, метрики. CI: `.github/workflows/tests.yml` (push + PR).
+
 ## 🎯 Как добавить свою команду
 
 Открой подходящий файл в `src/commands/` (например, `apps.py`) и добавь блок в `try_handle`:

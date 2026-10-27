@@ -5,6 +5,8 @@ i-vector экстрактор и граф ~1 секунду и держит ~50 
 дважды незачем.
 """
 
+import json
+
 from vosk import Model, SetLogLevel
 
 from config import VOSK_MODEL
@@ -17,6 +19,18 @@ logger = get_logger("vosk")
 SetLogLevel(-1)
 
 _model: Model | None = None
+
+
+def text_of(raw_json: str) -> str:
+    """Извлекает распознанный текст из JSON-ответа Vosk.
+
+    Возвращает текст в нижнем регистре, без лишних пробелов.
+    При битом JSON — пустая строка (мусор не должен ломать пайплайн).
+    """
+    try:
+        return json.loads(raw_json).get("text", "").lower().strip()
+    except (ValueError, AttributeError):
+        return ""
 
 
 def get_vosk_model() -> Model:

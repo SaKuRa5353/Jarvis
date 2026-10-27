@@ -1,0 +1,4 @@
+# Dev/Test dependencies
+pytest>=8.0
+openai>=1.0.0   # нужен src.commands -> src.llm (unit-тесты plan_command)
+python-dotenv>=1.0.0

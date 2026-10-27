@@ -13,4 +13,6 @@ logs/
 apply_qw.py
 dump_*.sh
 *.qwbak
+*.hotbak
+.pytest_cache/
 jarvis*.txt

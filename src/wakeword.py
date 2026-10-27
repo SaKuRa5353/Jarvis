@@ -5,7 +5,6 @@ KaldiRecognizer включается на речь и получает pre-roll 
 предыдущих кадров), чтобы первое слово не обрезалось.
 """
 
-import json
 import time
 from collections import deque
 from collections.abc import Callable, Iterator
@@ -25,7 +24,7 @@ from config import (
 from src.audio import Subscriber
 from src.logger import get_logger
 from src.silero_vad import SileroVAD
-from src.vosk_model import get_vosk_model
+from src.vosk_model import get_vosk_model, text_of
 
 logger = get_logger("wakeword")
 
@@ -46,7 +45,7 @@ class WakewordDetector:
         self.sample_rate = sample_rate
         self.vad = SileroVAD(sample_rate)
 
-    def _match(self, text: str) -> bool:
+    def is_match(self, text: str) -> bool:
         return any(word in text for word in self.wake_words)
 
     def _new_recognizer(self) -> KaldiRecognizer:
@@ -56,7 +55,7 @@ class WakewordDetector:
 
     # ──────────────────── VAD-ГЕЙТ ────────────────────
 
-    def _utterances(
+    def phrases(
         self,
         should_stop: Callable[[], bool] | None = None,
         deadline: float | None = None,
@@ -115,7 +114,7 @@ class WakewordDetector:
                 silence += 1
 
             if silence >= min_silence or frames >= max_frames:
-                text = _text_of(rec.FinalResult())
+                text = text_of(rec.FinalResult())
                 rec = None
                 if text:
                     yield text
@@ -127,9 +126,9 @@ class WakewordDetector:
         logger.info("💤 Жду 'Джарвис'...")
         self.sub.drain()
 
-        for text in self._utterances():
+        for text in self.phrases():
             logger.info("Vosk услышал: %s", text)
-            if self._match(text):
+            if self.is_match(text):
                 logger.info("🎯 Услышал wakeword: %s", text)
                 return text
 
@@ -153,16 +152,9 @@ class WakewordDetector:
         self.sub.drain()
         deadline = time.monotonic() + timeout
 
-        for text in self._utterances(should_stop=is_done, deadline=deadline):
-            if self._match(text):
+        for text in self.phrases(should_stop=is_done, deadline=deadline):
+            if self.is_match(text):
                 logger.info("🛑 Прерывание по wakeword: %s", text)
                 return True
 
         return False
-
-
-def _text_of(raw_json: str) -> str:
-    try:
-        return json.loads(raw_json).get("text", "").lower().strip()
-    except (ValueError, AttributeError):
-        return ""

@@ -129,6 +129,19 @@ LLM_TOOLS_HINT = (
     "вызови подходящую функцию (tool). Для приветствий, ответов на "
     "вопросы и болтовни функция не нужна — просто ответь текстом."
 )
+# Thinking/reasoning у Qwen3. Модель qwen3-jarvis собрана с thinking.default=true,
+# поэтому Ollama отдаёт текст в поле reasoning/thinking, а content приходит ПУСТЫМ.
+# Текстом промпта это не отключается — только полем `think` в запросе.
+#   think  -> extra_body={'think': False}   (основной способ)
+#   effort -> reasoning_effort='none'
+#   none   -> запрос не меняется
+# Что работает на вашей Ollama — покажет  python tests/check_llm.py
+LLM_THINKING = False
+LLM_THINK_MODE = "think"
+
+# Чем заменять пустой/оборванный ответ LLM (ключ готовой фразы).
+LLM_EMPTY_FALLBACK = "not_listened"
+
 LLM_SYSTEM_PROMPT = (
     "Ты — Джарвис, голосовой ассистент. "
     "Отвечай по-русски коротко: 1-5 слов, сразу по делу. "

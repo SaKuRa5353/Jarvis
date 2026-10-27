@@ -7,15 +7,15 @@
 import re
 import subprocess
 
+from config import SENSORS_CMD, SENSORS_TIMEOUT_SEC
+
 from src.logger import get_logger
 
 logger = get_logger("commands.sensors")
 
 
 # ──────────────────────── НАСТРОЙКИ ────────────────────────
-
-SENSORS_CMD = "sensors"
-_TIMEOUT = 3
+# SENSORS_CMD / SENSORS_TIMEOUT_SEC — из config: единая точка источника.
 
 # Строки, по которым ищем температуру CPU (Intel → AMD → fallback)
 _CPU_KEYS = ("Package id", "Tctl", "Tdie", "CPU Christoph")
@@ -49,13 +49,13 @@ def _read_sensors() -> str | None:
             [SENSORS_CMD],
             capture_output=True,
             text=True,
-            timeout=_TIMEOUT,
+            timeout=SENSORS_TIMEOUT_SEC,
         )
     except FileNotFoundError:
         logger.error("sensors не установлен (пакет lm_sensors)")
         return None
     except subprocess.TimeoutExpired:
-        logger.error("sensors завис (>%.1f сек)", _TIMEOUT)
+        logger.error("sensors завис (>%.1f сек)", SENSORS_TIMEOUT_SEC)
         return None
 
     # sensors пишет предупреждения в stderr — их игнорируем,

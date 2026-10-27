@@ -316,11 +316,11 @@ def _run_conversation(
     deadline = time.monotonic() + CONVERSATION_TIMEOUT_SEC
 
     while time.monotonic() < deadline:
-        # Ждём следующую фразу через _utterances() — он использует VAD-гейт
+        # Ждём следующую фразу через phrases() — он использует VAD-гейт
         interrupted = False
-        for text in detector._utterances(deadline=deadline):
+        for text in detector.phrases(deadline=deadline):
             # Если это wakeword — прерываем диалог
-            if detector._match(text):
+            if detector.is_match(text):
                 logger.info("🎯 Wakeword в диалоге — выход")
                 interrupted = True
                 break

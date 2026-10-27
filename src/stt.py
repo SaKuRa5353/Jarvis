@@ -1,14 +1,12 @@
 """Vosk Speech-to-Text (полностью офлайн)."""
 
-import json
-
 import numpy as np
 from vosk import KaldiRecognizer, Model
 
 from config import SAMPLE_RATE
 
 from src.logger import get_logger
-from src.vosk_model import get_vosk_model
+from src.vosk_model import get_vosk_model, text_of
 
 logger = get_logger("stt")
 
@@ -36,8 +34,7 @@ class VoskSTT:
         for i in range(0, len(data), chunk_size):
             rec.AcceptWaveform(data[i : i + chunk_size])
 
-        result = json.loads(rec.FinalResult())
-        text = result.get("text", "").strip()
+        text = text_of(rec.FinalResult())
 
         if text:
             logger.info("📝 Ты: %s", text)
