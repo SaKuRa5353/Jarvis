@@ -21,3 +21,4 @@ dump_*.sh
 jarvis*.txt
 .vscode/
 scripts/
+.coverage
