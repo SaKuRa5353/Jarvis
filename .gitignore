@@ -14,5 +14,10 @@ apply_qw.py
 dump_*.sh
 *.qwbak
 *.hotbak
+*.llmbak
+*.cnbak
+*.nstbak
 .pytest_cache/
 jarvis*.txt
+.vscode/
+scripts/
