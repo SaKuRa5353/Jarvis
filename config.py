@@ -114,12 +114,22 @@ CONVERSATION_TIMEOUT_SEC = 15.0
 # ──────────────────────── LLM ────────────────────────
 
 OLLAMA_BASE_URL = "http://localhost:11434/v1"
-LLM_MODEL = "qwen3-jarvis:latest"
+# Модель берётся из .env (JARVIS_LLM_MODEL), чтобы переключаться без правки кода.
+# qwen3-jarvis для голосового ассистента не годится: thinking.values=[true]
+# (отключить нельзя), при reasoning_effort="none" в content течёт цепочка
+# рассуждений, а 9.1 tok/s на i7-7700HQ не дают уложиться в голосовой диалог.
+# qwen2.5:3b — не reasoning, 1.9 ГБ, уже скачана. Откат:
+#   JARVIS_LLM_MODEL=qwen3-jarvis:latest  в .env
+LLM_MODEL = os.getenv("JARVIS_LLM_MODEL", "qwen2.5:3b")
 # Бюджет текстового ответа. ВНИМАНИЕ: до quick wins эта константа была
 # объявлена, но НЕ использовалась — llm.py всегда брал LLM_TOOLS_MAX_TOKENS.
 # Теперь лимит = LLM_TOOLS_MAX_TOKENS при включённых tools, иначе этот.
 LLM_MAX_TOKENS = 30               # обычный текстовый ответ
 LLM_TOOLS_MAX_TOKENS = 128        # tool_call требует больше токенов
+# Отдельный бюджет для thinking-моделей: рассуждение съедает десятки токенов
+# ДО ответа, поэтому 128 всегда заканчивалось finish_reason='length'.
+# Применяется только при LLM_THINKING = True.
+LLM_THINKING_MAX_TOKENS = 512
 LLM_TEMPERATURE = 0.3
 LLM_NUM_THREADS = 8
 LLM_TIMEOUT_SEC = 30
@@ -137,7 +147,9 @@ LLM_TOOLS_HINT = (
 #   none   -> запрос не меняется
 # Что работает на вашей Ollama — покажет  python tests/check_llm.py
 LLM_THINKING = False
-LLM_THINK_MODE = "think"
+# Замер 2026-10-25 показал: поле think у этой сборки игнорируется
+# (thinking.values = [true]), работает только reasoning_effort="none".
+LLM_THINK_MODE = "effort"
 
 # Чем заменять пустой/оборванный ответ LLM (ключ готовой фразы).
 LLM_EMPTY_FALLBACK = "not_listened"
@@ -183,3 +195,29 @@ EARCON_TAIL_SEC = 0.03              # пауза после короткого �
 HISTORY_DIR = Path(os.getenv("JARVIS_HISTORY_DIR", "data/history"))
 HISTORY_ENABLED = os.getenv("JARVIS_HISTORY_ENABLED", "0") == "1"
 HISTORY_RESTORE_TURNS = 6
+
+
+# ──────────────────────── FUZZY (математическое ядро) ────────────────────────
+FUZZY_THRESHOLD = 0.70          # прежний порог, пока не подобран по ROC (T10)
+FUZZY_LAMBDA = 0.5              # вес символьного расстояния против фонетического
+FUZZY_BAND = 4                  # полоса Укконена; None = полная матрица
+FUZZY_ENGINE = "wdl"            # "wdl" | "difflib"
+
+# ──────────────────────── INTENT (математическое ядро) ────────────────────────
+INTENT_TAU = 0.55               # минимальная P(top1) для выполнения действия
+INTENT_DELTA = 0.15             # минимальная маржа P(top1) - P(top2)
+INTENT_TAU_DANGEROUS = 0.75     # для действий с побочным эффектом
+INTENT_DELTA_DANGEROUS = 0.25
+INTENT_ENABLED = True           # False -> прежняя цепочка try_handle
+INTENT_NGRAM_MIN = 2
+INTENT_NGRAM_MAX = 4
+
+# ──────────────────────── VAD-HMM (математическое ядро) ────────────────────────
+VAD_DECODER = "threshold"   # "threshold" | "viterbi"; по умолчанию прежняя логика
+VAD_HMM_MODEL = "data/vad_hmm.npz"
+
+# ──────────────────────── WAKEWORD-DTW (математическое ядро) ────────────────────────
+WAKEWORD_MODE = "text"          # "text" | "dtw"; по умолчанию прежнее распознавание
+WAKEWORD_DTW_THRESHOLD = 0.35   # максимальное нормированное DTW-расстояние
+WAKEWORD_DTW_WINDOW = 5         # окно Сако-Чибуры для выравнивания
+DATA_WAKEWORD_DIR = Path("data/wakeword")   # эталоны MFCC для DTW-режима

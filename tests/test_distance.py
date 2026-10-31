@@ -5,6 +5,7 @@ from __future__ import annotations
 import difflib
 import math
 import random
+import sys
 import time
 
 import pytest
@@ -24,6 +25,16 @@ from src.mathcore.weights import (
 )
 
 ALPHABET = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя"
+
+
+def _time_budget(base: float) -> float:
+    """Порог по времени с поправкой на трассировку Coverage.
+
+    Под coverage чистый Python замедляется в разы, поэтому жёсткий порог
+    без Coverage даёт ложные падения. Без инструментирования бюджет
+    остаётся исходным.
+    """
+    return base * 3.0 if sys.gettrace() is not None else base
 
 
 def _random_pair(rng: random.Random, max_len: int = 6) -> tuple[str, str]:
@@ -217,7 +228,8 @@ def test_performance_500_pairs_of_length_30() -> None:
     for a, b in pairs:
         damerau_levenshtein(a, b)
     elapsed = time.monotonic() - start
-    assert elapsed < 1.5, f"500 пар длиной 30 за {elapsed:.2f} с — дольше 1.5 с"
+    budget = _time_budget(1.5)
+    assert elapsed < budget, f"500 пар длиной 30 за {elapsed:.2f} с — дольше {budget:.2f} с"
 
 
 def test_band_is_faster_than_full_matrix() -> None:
