@@ -2,14 +2,24 @@
 
 Vosk small-ru ослышается: «тонкость» вместо «громкость», «эдип сик»
 вместо «дипсик». Функция `correct()` заменяет распознанные слова
-на известные триггеры команд с помощью difflib.get_close_matches
-(порог 0.70).
+на известные триггеры команд с помощью тонкой математической метрики
+(взвешенное расстояние Дамерau–Левенштейна + фонетика — `combined_distance`).
 
-Работает ТОЛЬКО с неизвестными словами — если слово уже в словаре,
-не трогаем. Это защищает от «включи» → «выключи».
+Движок выбирается параметром `engine`: `"wdl"` (математический, по умолчанию)
+или `"difflib"` (прежнее поведение — для A/B-набора в главе 4).
+
+Работает ТОЛЬКО с неизвестными словами — если слово уже в словаре или входит
+в стоп-словарь, не трогаем. Это защищает от «включи» → «выключи»
+и от «температура процессора».
 """
 
 import difflib
+
+from config import FUZZY_BAND, FUZZY_ENGINE, FUZZY_LAMBDA, FUZZY_THRESHOLD
+from src.logger import get_logger
+from src.mathcore.phonetics import combined_distance
+
+logger = get_logger(__name__)
 
 # ──────────────────── ЯВНЫЕ ИСПРАВЛЕНИЯ VOSK ────────────────────
 # Известные искажения Vosk, которые difflib не ловит из-за
@@ -125,13 +135,74 @@ KNOWN = frozenset((
 # «год»→«погод», «покой»→«открой» и т.п.
 _MIN_CORRECT_LEN = 6
 
+# Стоп-слова: формы, которые «не трогать» при коррекции.
+STOPWORDS_CORRECT: frozenset[str] = frozenset((
+    # Датчики / железо
+    "процессора", "процессор", "процессору", "процессоры", "процессоре",
+    "проц", "cpu", "цпу",
+    "температур", "температура", "температуры", "температуру", "температурой",
+    "нагрев", "перегрев", "градус", "жарит", "горяч",
+    # Звук / громкость
+    "громкость", "громк", "громче", "погромче", "прибавь", "добавь",
+    "тише", "потише", "убавь",
+    # Веб / приложения
+    "вк", "vk", "вконтакте",
+    "ютуб", "ютубе",
+    "музыка", "музыку", "music",
+    "скриншот", "скрин", "снимок",
+    # Служебные
+    "привет", "погода", "петрозаводск", "расписание",
+))
 
-def correct(text: str, threshold: float = 0.70) -> str:
+
+def _best_candidate_wdl(
+    word: str, threshold: float, lam: float, band: int | None
+) -> tuple[str, float, float] | None:
+    """Лучший кандидат из KNOWN для `word` по метрике combined_distance.
+
+    similarity(a, b) = 1 − combined_distance(a, b) / max(|a|, |b|).
+    Возвращает (кандидат, similarity, distance) или None, если лучшее
+    совпадение не превышает порог `threshold`.
+    """
+    best_word: str | None = None
+    best_sim = 0.0
+    best_d = 0.0
+    for cand in KNOWN:
+        d = combined_distance(word, cand, lam=lam, band=band)
+        denom = max(len(word), len(cand))
+        sim = 1.0 - d / denom if denom else 1.0
+        if sim > best_sim:
+            best_sim = sim
+            best_d = d
+            best_word = cand
+    if best_word is None or best_sim < threshold:
+        return None
+    return best_word, best_sim, best_d
+
+
+def correct(
+    text: str,
+    threshold: float | None = None,
+    engine: str | None = None,
+    lam: float | None = None,
+    band: int | None = None,
+) -> str:
     """Заменяет распознанные слова на известные триггеры.
 
     Пример: «тонкость выше» → «громкость выше».
-    Известные слова не трогаем — защищаемся от «включи» → «выключи».
+
+    Движок:
+      - ``"difflib"`` — прежнее поведение (`difflib.get_close_matches`, cutoff=threshold);
+      - ``"wdl"`` — математический: similarity = 1 − combined_distance / max(|a|, |b|).
+
+    Необязательные параметры переопределяют значения из config
+    (FUZZY_THRESHOLD / FUZZY_ENGINE / FUZZY_LAMBDA / FUZZY_BAND).
     """
+    threshold = FUZZY_THRESHOLD if threshold is None else threshold
+    engine = FUZZY_ENGINE if engine is None else engine
+    lam = FUZZY_LAMBDA if lam is None else lam
+    band = FUZZY_BAND if band is None else band
+
     # 1. Явные замены Vosk-искажений (многословные и короткие).
     #    Заменяем все подходящие искажения, а не только первое попавшееся.
     for bad, good in _VOSK_FIXES.items():
@@ -144,9 +215,18 @@ def correct(text: str, threshold: float = 0.70) -> str:
 
     corrected = []
     for w in words:
-        if w in KNOWN or len(w) < _MIN_CORRECT_LEN:
+        if w in KNOWN or len(w) < _MIN_CORRECT_LEN or w in STOPWORDS_CORRECT:
             corrected.append(w)
-        else:
+            continue
+        if engine == "difflib":
             match = difflib.get_close_matches(w, KNOWN, n=1, cutoff=threshold)
             corrected.append(match[0] if match else w)
+            continue
+        found = _best_candidate_wdl(w, threshold=threshold, lam=lam, band=band)
+        if found is None:
+            corrected.append(w)
+            continue
+        cand, sim, d = found
+        corrected.append(cand)
+        logger.info("fuzzy: '%s' → '%s'  sim=%.3f  d=%.3f  engine=%s", w, cand, sim, d, engine)
     return " ".join(corrected)
