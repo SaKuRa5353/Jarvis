@@ -162,6 +162,7 @@ def test_invalid_hysteresis_and_loop_width() -> None:
             loop_width_for(*args)
 
 
+@pytest.mark.hw
 @pytest.mark.parametrize("decoder", ["threshold", "viterbi"])
 def test_recorder_without_hardware(decoder: str, model: HMM, monkeypatch, tmp_path) -> None:
     """Оба декодера записывают одинаковые сильную речь и тишину без устройств."""
@@ -191,6 +192,7 @@ def test_recorder_without_hardware(decoder: str, model: HMM, monkeypatch, tmp_pa
     assert (recorder.hmm is None) == (decoder == "threshold")
 
 
+@pytest.mark.hw
 def test_threshold_does_not_load_hmm(monkeypatch) -> None:
     from src import vad
 
@@ -201,6 +203,7 @@ def test_threshold_does_not_load_hmm(monkeypatch) -> None:
     assert recorder.hmm is None
 
 
+@pytest.mark.hw
 @pytest.mark.parametrize(
     "probs",
     [
@@ -246,6 +249,7 @@ def test_threshold_matches_original(probs, monkeypatch) -> None:
     assert text == ("проверка" if speech >= 3 else "")
 
 
+@pytest.mark.hw
 def test_viterbi_missing_model_and_invalid_decoder(monkeypatch) -> None:
     from src import vad
 
