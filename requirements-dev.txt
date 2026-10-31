@@ -1,4 +1,5 @@
 # Dev/Test dependencies
 pytest>=8.0
+numpy>=1.24.0           # нужен tests/test_viterbi.py, test_features.py, test_wakeword_dtw.py
 openai>=1.0.0   # нужен src.commands -> src.llm (unit-тесты plan_command)
 python-dotenv>=1.0.0
