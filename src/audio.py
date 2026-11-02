@@ -9,12 +9,15 @@
 запускать STT параллельно с VAD и экономить ~1 секунду на ответ.
 """
 
+from __future__ import annotations
+
 import collections
+import contextlib
 import queue
 import threading
+from typing import Any
 
 import numpy as np
-import sounddevice as sd
 
 from config import (
     AUDIO_BLOCK_SIZE,
@@ -53,9 +56,9 @@ def input_paused() -> bool:
 class BroadcastBuffer:
     """Холдит скользящее окно блоков аудио, раздавая копии подписчикам."""
 
-    def __init__(self, maxlen: int = 1000, mic: "Microphone | None" = None):
+    def __init__(self, maxlen: int = 1000, mic: Microphone | None = None):
         self._buffer: collections.deque[bytes] = collections.deque(maxlen=maxlen)
-        self._subscribers: list["Subscriber"] = []
+        self._subscribers: list[Subscriber] = []
         self._lock = threading.Lock()
         self._mic = mic
 
@@ -77,7 +80,7 @@ class BroadcastBuffer:
         for sub in subs:
             sub._offer(block)
 
-    def subscribe(self, maxsize: int = 100) -> "Subscriber":
+    def subscribe(self, maxsize: int = 100) -> Subscriber:
         """Возвращает подписчика, который можно читать как старый mic.read()."""
         sub = Subscriber(self, maxsize)
         with self._lock:
@@ -87,7 +90,7 @@ class BroadcastBuffer:
             sub._offer(block)
         return sub
 
-    def unsubscribe(self, sub: "Subscriber"):
+    def unsubscribe(self, sub: Subscriber):
         """Отписывает подписчика от буфера."""
         with self._lock:
             if sub in self._subscribers:
@@ -110,14 +113,10 @@ class Subscriber:
 
     def _offer(self, block: bytes):
         if self._q.full():
-            try:
+            with contextlib.suppress(queue.Empty):
                 self._q.get_nowait()  # отстал — выбрасываем старый блок
-            except queue.Empty:
-                pass
-        try:
+        with contextlib.suppress(queue.Full):
             self._q.put_nowait(block)
-        except queue.Full:
-            pass
 
     # ── публичное ──
 
@@ -200,7 +199,7 @@ class Microphone:
         # 1000 блоков * 1280 сэмплов = ~64 сек истории
         self._broadcast = BroadcastBuffer(maxlen=1000, mic=self)
 
-        self._stream: sd.RawInputStream | None = None
+        self._stream: Any = None
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._error: str | None = None
@@ -214,6 +213,10 @@ class Microphone:
 
         self._stop.clear()
         self._error = None
+
+        # sounddevice загружается только при реальном открытии микрофона.
+        # Это позволяет тестировать буфер и маршрутизацию в headless CI.
+        import sounddevice as sd
 
         self._stream = sd.RawInputStream(
             samplerate=self.sample_rate,
