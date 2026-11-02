@@ -1,7 +1,7 @@
 """Пакет команд. Собирает все модули и экспортирует plan_command."""
 
 from __future__ import annotations
-
+import re
 from typing import Any
 
 import config
@@ -56,11 +56,15 @@ def plan_command(text: str, llm: JarvisLLM):
     Если правила не сработали — возвращает (LLM_MARKER, None, None).
     LLM-вызов делает assistant.py (для прерывания).
     """
-    t = text.lower().replace("джарвис", "").strip()
+    t = re.sub(r'\bджарвис\b[,\s]*', '', text.lower()).strip()
 
     # Интент-цепочка: Bayes-классификатор решает, выполнять ли действие.
     if config.INTENT_ENABLED:
         intent_result = classify(t)
+        if intent_result.intent is not None and not intent_result.action_allowed:
+            # Отказ по порогам — терминальный результат для командной ветки.
+            # Иначе legacy-правила обходят защиту и всё равно возвращают action.
+            return LLM_MARKER, None, None
         if intent_result.action_allowed and intent_result.intent is not None:
             handler_result = _run_intent(intent_result.intent, t, llm)
             if handler_result is not None:

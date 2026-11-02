@@ -131,13 +131,14 @@ class Subscriber:
         got = 0
 
         if len(self._leftover):
-            parts.append(self._leftover)
-            got = len(self._leftover)
-            self._leftover = np.zeros(0, dtype=np.int16)
+            take = min(len(self._leftover), n_samples)
+            parts.append(self._leftover[:take])
+            got = take
+            self._leftover = self._leftover[take:]
 
         try:
             while got < n_samples:
-                raw = self._q.get(timeout=timeout if timeout else 0.5)
+                raw = self._q.get(timeout=timeout)
                 chunk = np.frombuffer(raw, dtype=np.int16)
                 if len(chunk) > n_samples - got:
                     self._leftover = chunk[n_samples - got:]

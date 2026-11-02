@@ -14,6 +14,7 @@ Vosk small-ru ослышается: «тонкость» вместо «гром
 """
 
 import difflib
+import re
 
 from config import FUZZY_BAND, FUZZY_ENGINE, FUZZY_LAMBDA, FUZZY_THRESHOLD
 from src.logger import get_logger
@@ -203,11 +204,11 @@ def correct(
     lam = FUZZY_LAMBDA if lam is None else lam
     band = FUZZY_BAND if band is None else band
 
-    # 1. Явные замены Vosk-искажений (многословные и короткие).
-    #    Заменяем все подходящие искажения, а не только первое попавшееся.
-    for bad, good in _VOSK_FIXES.items():
-        if bad in text:
-            text = text.replace(bad, good, 1)
+    # 1. Явные замены применяются только по границам слов. Иначе «открой торрент»
+    #    ошибочно совпадает с «открой то», а «веками» — с «века».
+    for bad, good in sorted(_VOSK_FIXES.items(), key=lambda item: -len(item[0])):
+        pattern = rf"(?<!\w){re.escape(bad)}(?!\w)"
+        text = re.sub(pattern, good, text, count=1)
 
     words = text.split()
     if not words:

@@ -39,3 +39,20 @@ def test_llm_marker_for_chat():
 def test_time_command():
     response, action, phrase = plan_command("который час", llm=None)
     assert response.startswith("Сейчас")
+
+
+def test_rejected_intent_cannot_fall_back_to_legacy(monkeypatch):
+    """Отказ порогов не должен превращаться в разрешённое legacy-действие."""
+    import config
+    from src import commands
+    from src.intent import IntentResult
+
+    monkeypatch.setattr(config, "INTENT_ENABLED", True)
+    monkeypatch.setattr(
+        commands,
+        "classify",
+        lambda _text: IntentResult("apps.browser", 0.1, 0.0, False, True),
+    )
+    response, action, phrase = plan_command("открой ютуб", llm=None)
+    assert (response, action, phrase) == (LLM_MARKER, None, None)
+
