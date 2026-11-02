@@ -184,6 +184,7 @@ CATALOG: tuple[Intent, ...] = (
             "градус",
             "жарит",
             "горяч",
+            # Убрали общие слова: "желез", "железо", "комп", "ноут", "систем"
             "процессор",
             "проц",
             "cpu",
@@ -191,12 +192,7 @@ CATALOG: tuple[Intent, ...] = (
             "видеокарт",
             "gpu",
             "гпу",
-            "комп",
-            "ноут",
-            "систем",
             "материн",
-            "желез",
-            "железо",
             "конденсатор",
             "радиатор",
             "кулер",
@@ -275,11 +271,12 @@ def supports(text: str, intent: Intent) -> bool:
     """
     words = re.findall(r"[\w-]+", text.lower())
     normalized = " ".join(words)
+
     if intent.name == "sensor.cpu":
         return (
             any(
                 w in normalized
-                for w in ("температур", "нагрев", "перегрев", "градус", "жарит", "горяч")
+                for w in ("температур", "нагрев", "перегрев", "градус", "жарит", "горяч", "греет")
             )
             and any(w in normalized for w in intent.patterns[6:])
             and not any(
@@ -297,12 +294,14 @@ def supports(text: str, intent: Intent) -> bool:
                 )
             )
         )
+
     if intent.name.startswith("weather."):
         triggered = any(
             w in normalized for w in ("погод", "температур", "дожд", "солнечн", "ветер", "прогноз")
         )
         forecast = "завтра" in words or "прогноз" in normalized
         return triggered and forecast == (intent.name == "weather.forecast")
+
     if intent.name == "web.search":
         return (
             re.search(
@@ -311,8 +310,35 @@ def supports(text: str, intent: Intent) -> bool:
             )
             is not None
         )
+
     if intent.name == "hardware.info":
-        return any(pattern in normalized for pattern in intent.patterns)
+        # 1. ЖЕСТКИЙ ЗАПРЕТ: если есть слова про нагрев — это точно sensor.cpu, а не hardware.info
+        if any(w in normalized for w in ("температур", "нагрев", "перегрев", "градус", "жарит", "горяч", "греет")):
+            return False
+
+        # 2. Должно быть либо ключевое слово из паттернов + контекст,
+        # либо явный вопрос про характеристики
+        has_keyword = any(pattern in normalized for pattern in intent.patterns)
+        has_context = any(
+            w in normalized
+            for w in (
+                "характеристик",
+                "параметр",
+                "конфигураци",
+                "что за",
+                "что у меня",
+                "расскажи про",
+                "какое у меня",
+                "specs",
+                "спецификаци",
+                "компьютер",  # добавили для надёжности
+            )
+        )
+
+        # 3. Если просто "железо" без контекста, пропускаем только если фраза очень короткая (1-2 слова)
+        # и мы уже уверены, что это не про нагрев (см. пункт 1)
+        return has_keyword and (has_context or len(words) <= 2)
+
     wrappers = {
         "открой",
         "открыть",

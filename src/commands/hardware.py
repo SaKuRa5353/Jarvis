@@ -3,8 +3,11 @@
 Парсим системные команды вручную. Вывод — красиво в консоль, голосом — короткое подтверждение.
 """
 
+from __future__ import annotations
+
 import re
 import subprocess
+from pathlib import Path
 
 from src.logger import get_logger
 
@@ -60,7 +63,7 @@ def _parse_cpu() -> dict | None:
     try:
         cores = int(cps) * int(socks) if cps and socks else None
     except ValueError:
-        pass
+        cores = None
 
     return {"model": model, "cores": cores, "threads": threads}
 
@@ -77,21 +80,28 @@ def _parse_ram() -> dict | None:
     return None
 
 
-def _parse_gpu() -> list[str] | None:
-    lspci = _run(["lspci"])
-    if not lspci:
-        return None
+def _parse_gpu(drm_dir: Path = Path("/sys/class/drm")) -> list[str] | None:
+    """Возвращает G = {производитель, PCI ID, драйвер} для DRM-видеокарт.
 
-    gpus = []
-    for line in lspci.splitlines():
-        if any(k in line for k in ("VGA compatible", "3D controller", "Display controller")):
-            if ":" in line:
-                desc = line.split(":", 2)[-1].strip()
-                desc = re.sub(r"\s*\(rev [^)]+\)", "", desc)
-                desc = desc.replace("Corporation ", "").replace("Inc. ", "")
-                desc = desc.replace("[AMD/ATI] ", "").replace("Advanced Micro Devices, ", "AMD ")
-                gpus.append(desc)
-
+    Читает только атрибуты vendor/device и ссылку driver. Не запускает lspci:
+    чтение PCI-конфигурации может навсегда застрять в pm_runtime_barrier,
+    причём subprocess timeout не способен завершить процесс в состоянии D.
+    Точное торговое название без базы pci.ids не определяется.
+    """
+    vendors = {"0x8086": "Intel", "0x1002": "AMD", "0x10de": "NVIDIA"}
+    gpus: list[str] = []
+    for card in sorted(drm_dir.glob("card*")):
+        if re.fullmatch(r"card\d+", card.name) is None:
+            continue
+        device = card / "device"
+        try:
+            vendor = (device / "vendor").read_text(encoding="utf-8").strip().lower()
+            product = (device / "device").read_text(encoding="utf-8").strip().lower()
+        except OSError as error:
+            logger.warning("Не удалось прочитать видеокарту %s: %s", card.name, error)
+            continue
+        driver = (device / "driver").resolve().name
+        gpus.append(f"{vendors.get(vendor, vendor)} {product} (драйвер {driver})")
     return gpus if gpus else None
 
 

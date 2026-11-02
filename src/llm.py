@@ -9,6 +9,7 @@
 одним куском в конце — подтверждения всё равно готовые фразы).
 """
 
+import threading
 from types import SimpleNamespace
 
 from openai import OpenAI
@@ -18,6 +19,7 @@ from config import (
     LLM_MAX_TOKENS,
     LLM_MODEL,
     LLM_THINKING,
+    LLM_THINKING_MAX_TOKENS,
     LLM_THINK_MODE,
     LLM_NUM_THREADS,
     LLM_SYSTEM_PROMPT,
@@ -73,6 +75,7 @@ class JarvisLLM:
         text: str,
         context: str | None = None,
         on_delta=None,
+        cancel: threading.Event | None = None,
     ) -> tuple[str, str | None] | None:
         """Отправляет запрос в LLM с tools (function calling).
 
@@ -98,7 +101,12 @@ class JarvisLLM:
         # tools передаются всегда → фактический лимит LLM_TOOLS_MAX_TOKENS.
         # LLM_MAX_TOKENS применяется, только если tools отключат.
         # (До quick wins LLM_MAX_TOKENS не использовался вовсе.)
-        max_tokens = LLM_TOOLS_MAX_TOKENS if TOOLS else LLM_MAX_TOKENS
+        if TOOLS:
+            max_tokens = (
+                LLM_THINKING_MAX_TOKENS if LLM_THINKING else LLM_TOOLS_MAX_TOKENS
+            )
+        else:
+            max_tokens = LLM_MAX_TOKENS
 
         # Think-параметры собираем ОТДЕЛЬНО от dict(): так не теряется
         # extra_body с options.num_thread.
@@ -137,11 +145,19 @@ class JarvisLLM:
                 ) or ""
             else:
                 raw, tool_calls, finish_reason = self._ask_streaming(
-                    on_delta=on_delta, **request
+                    on_delta=on_delta, cancel=cancel, **request
                 )
 
             if tool_calls:
-                return self._run_tool(tool_calls[0])
+                # Запрос могли отменить, пока модель думала: выполнять
+                # действие после отмены нельзя (см. лог 2026-10-27 23:03).
+                if cancel is not None and cancel.is_set():
+                    logger.info("[LLM] отменено до выполнения tool")
+                    return None
+                result = self._run_tool(tool_calls[0])
+                if cancel is not None and cancel.is_set():
+                    logger.warning("[LLM] отменено во время tool — действие могло выполниться")
+                return result
         except Exception as e:
             logger.error("[LLM error] %s", e)
             return None
@@ -151,7 +167,7 @@ class JarvisLLM:
             return None
         answer = raw.strip()
 
-        # Пустой ответ = thinking съел весь бюджет, content не отдан.
+    # Пустой ответ = thinking съел весь бюджет, content не отдан.
         # Озвучивать нечего: без подмены TTS синтезирует тишину (~1.5 с).
         if not answer:
             logger.warning(
@@ -180,17 +196,23 @@ class JarvisLLM:
         self._append_history(text, answer)
         return answer, None
 
-    def _ask_streaming(self, on_delta, **request) -> tuple[str | None, list | None, str | None]:
+    def _ask_streaming(
+        self, on_delta, cancel: threading.Event | None = None, **request
+    ) -> tuple[str | None, list | None, str | None]:
         """Стриминговый запрос: текст уходит в on_delta, tool-вызовы копятся.
 
         Возвращает (текст_ответа, [tool_call] или None). Куски tool-вызова
         (id, имя, аргументы) приходят порознь и склеиваются по index.
         """
         parts: list[str] = []
+        reasoning_parts: list[str] = []
         calls: dict[int, dict] = {}
         finish: str | None = None
 
         for chunk in self.client.chat.completions.create(**request, stream=True):
+            if cancel is not None and cancel.is_set():
+                logger.info("[LLM] стриминг прерван по отмене")
+                break
             if not chunk.choices:
                 continue
             choice = chunk.choices[0]
@@ -199,6 +221,14 @@ class JarvisLLM:
                 finish = choice.finish_reason
             if delta is None:
                 continue
+            # Ollama у reasoning-моделей кладёт рассуждение в отдельное поле.
+            # Раньше оно молча выбрасывалось: метрики показывали 44 с на запрос,
+            # а в логе было "reasoning=0 симв." — невозможно диагностировать.
+            rdelta = getattr(delta, "reasoning_content", None) or getattr(
+                delta, "reasoning", None
+            )
+            if rdelta:
+                reasoning_parts.append(rdelta)
             if delta.content:
                 parts.append(delta.content)
                 on_delta(delta.content)
@@ -212,6 +242,9 @@ class JarvisLLM:
                     if tc.function.arguments:
                         slot["args"] += tc.function.arguments
 
+        if cancel is not None and cancel.is_set():
+            return None, None, finish
+
         if calls:
             first = calls[min(calls)]
             call = SimpleNamespace(
@@ -219,6 +252,8 @@ class JarvisLLM:
                 function=SimpleNamespace(name=first["name"], arguments=first["args"]),
             )
             return None, [call], finish
+        if reasoning_parts:
+            logger.debug("[LLM reasoning stream] %s", "".join(reasoning_parts)[:300])
         return "".join(parts), None, finish
 
     def _run_tool(self, call) -> tuple[str, str | None]:
