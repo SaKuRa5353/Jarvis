@@ -4,22 +4,25 @@ import subprocess
 import sys
 
 
-def test_tts_and_assistant_import_without_silero_tts() -> None:
-    """Импорт модулей не должен загружать Silero или запускать синтез."""
+def test_voice_modules_import_without_runtime_dependencies() -> None:
+    """Импорт голосовых модулей не должен запускать runtime-зависимости."""
     code = """
 import importlib.abc
 import sys
 
 
-class BlockSilero(importlib.abc.MetaPathFinder):
+class BlockRuntimeAudio(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname == "silero_tts" or fullname.startswith("silero_tts."):
-            raise ModuleNotFoundError("silero_tts заблокирован тестом", name=fullname)
+        blocked = ("silero_tts", "vosk", "sounddevice")
+        if any(fullname == name or fullname.startswith(name + ".") for name in blocked):
+            raise ModuleNotFoundError("runtime-зависимость заблокирована тестом", name=fullname)
         return None
 
 
-sys.meta_path.insert(0, BlockSilero())
+sys.meta_path.insert(0, BlockRuntimeAudio())
+import src.audio
 import src.tts
+import src.vad
 import src.assistant
 """
     result = subprocess.run(

@@ -7,18 +7,12 @@ i-vector экстрактор и граф ~1 секунду и держит ~50 
 
 import json
 
-from vosk import Model, SetLogLevel
-
 from config import VOSK_MODEL
-
 from src.logger import get_logger
 
 logger = get_logger("vosk")
 
-# Vosk пишет LOG(...) напрямую в stderr, минуя logging.
-SetLogLevel(-1)
-
-_model: Model | None = None
+_model = None
 
 
 def text_of(raw_json: str) -> str:
@@ -33,10 +27,17 @@ def text_of(raw_json: str) -> str:
         return ""
 
 
-def get_vosk_model() -> Model:
+def get_vosk_model():
     """Лениво загружает и отдаёт общую Vosk-модель."""
     global _model
     if _model is None:
+        try:
+            from vosk import Model, SetLogLevel
+        except ModuleNotFoundError as exc:
+            if exc.name != "vosk":
+                raise
+            raise RuntimeError("Для распознавания речи установите зависимость vosk") from exc
+        SetLogLevel(-1)
         logger.info("Загружаю Vosk модель...")
         _model = Model(VOSK_MODEL)
         logger.info("Vosk модель загружена")

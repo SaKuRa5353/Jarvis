@@ -9,8 +9,6 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterator
 
-from vosk import KaldiRecognizer, Model
-
 from config import (
     SAMPLE_RATE,
     VAD_FRAME,
@@ -20,7 +18,6 @@ from config import (
     WW_MAX_UTTERANCE_SEC,
     WW_PREROLL_SEC,
 )
-
 from src.audio import Subscriber
 from src.logger import get_logger
 from src.silero_vad import SileroVAD
@@ -35,7 +32,7 @@ class WakewordDetector:
     def __init__(
         self,
         sub: Subscriber,
-        model: Model | None = None,
+        model=None,
         wake_words: tuple[str, ...] = WAKE_WORDS,
         sample_rate: int = SAMPLE_RATE,
     ):
@@ -48,7 +45,13 @@ class WakewordDetector:
     def is_match(self, text: str) -> bool:
         return any(word in text for word in self.wake_words)
 
-    def _new_recognizer(self) -> KaldiRecognizer:
+    def _new_recognizer(self):
+        try:
+            from vosk import KaldiRecognizer
+        except ModuleNotFoundError as exc:
+            if exc.name != "vosk":
+                raise
+            raise RuntimeError("Для wakeword установите зависимость vosk") from exc
         rec = KaldiRecognizer(self.model, self.sample_rate)
         rec.SetWords(True)
         return rec
@@ -74,7 +77,7 @@ class WakewordDetector:
 
         self.vad.reset()
         pre_roll: deque[bytes] = deque(maxlen=pre_roll_max)
-        rec: KaldiRecognizer | None = None
+        rec = None
         silence = 0
         frames = 0
 

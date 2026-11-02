@@ -8,7 +8,6 @@
 from __future__ import annotations
 
 import numpy as np
-from vosk import KaldiRecognizer
 
 import config
 from config import (
@@ -27,6 +26,7 @@ from src.silero_vad import SileroVAD
 from src.vosk_model import get_vosk_model, text_of
 
 logger = get_logger("vad")
+KaldiRecognizer = None
 
 
 class SpeechRecorder:
@@ -64,7 +64,15 @@ class SpeechRecorder:
         self.sub.drain()
         self.vad.reset()
 
-        rec = KaldiRecognizer(get_vosk_model(), self.sample_rate)
+        recognizer_type = KaldiRecognizer
+        if recognizer_type is None:
+            try:
+                from vosk import KaldiRecognizer as recognizer_type
+            except ModuleNotFoundError as exc:
+                if exc.name != "vosk":
+                    raise
+                raise RuntimeError("Для распознавания речи установите зависимость vosk") from exc
+        rec = recognizer_type(get_vosk_model(), self.sample_rate)
 
         buffer: list[np.ndarray] = []
         speech_started = False

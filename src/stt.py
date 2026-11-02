@@ -1,10 +1,8 @@
 """Vosk Speech-to-Text (полностью офлайн)."""
 
 import numpy as np
-from vosk import KaldiRecognizer, Model
 
 from config import SAMPLE_RATE
-
 from src.logger import get_logger
 from src.vosk_model import get_vosk_model, text_of
 
@@ -14,7 +12,7 @@ logger = get_logger("stt")
 class VoskSTT:
     """Распознавание речи через Vosk."""
 
-    def __init__(self, model: Model | None = None, sample_rate: int = SAMPLE_RATE):
+    def __init__(self, model=None, sample_rate: int = SAMPLE_RATE):
         self.model = model or get_vosk_model()
         self.sample_rate = sample_rate
 
@@ -25,6 +23,12 @@ class VoskSTT:
 
         logger.info("🧠 Распознаю голос...")
 
+        try:
+            from vosk import KaldiRecognizer
+        except ModuleNotFoundError as exc:
+            if exc.name != "vosk":
+                raise
+            raise RuntimeError("Для распознавания речи установите зависимость vosk") from exc
         rec = KaldiRecognizer(self.model, self.sample_rate)
 
         # Разбиваем на чанки 4000 байт (250 мс при 16 kHz)
