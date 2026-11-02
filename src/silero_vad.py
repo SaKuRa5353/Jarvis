@@ -4,22 +4,30 @@
 но состояние LSTM (h/c) у каждого экземпляра своё.
 """
 
+from typing import Any
+
 import numpy as np
-import onnxruntime as ort
 
 from config import SAMPLE_RATE, VAD_MODEL
-
 from src.logger import get_logger
 
 logger = get_logger("vad")
 
-_session: ort.InferenceSession | None = None
+_session: Any | None = None
 
 
-def get_vad_session() -> ort.InferenceSession:
+def get_vad_session() -> Any:
     """Ленивый singleton сессии ONNX."""
     global _session
     if _session is None:
+        try:
+            import onnxruntime as ort
+        except ModuleNotFoundError as exc:
+            if exc.name != "onnxruntime":
+                raise
+            raise RuntimeError(
+                "Для запуска Silero VAD установите зависимость onnxruntime"
+            ) from exc
         logger.info("Загружаю Silero VAD...")
         _session = ort.InferenceSession(
             VAD_MODEL, providers=["CPUExecutionProvider"]
