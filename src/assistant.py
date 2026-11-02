@@ -8,16 +8,15 @@
 а «Секунду» / «К вашим услугам» играют параллельно размышлению.
 Длинные ответы озвучиваются по предложениям во время генерации LLM.
 """
-
 import atexit
+import re
 import threading
 import time
 import traceback
 
 from config import CONVERSATION_TIMEOUT_SEC
-
 from src.audio import Microphone, MicrophoneError
-from src.commands import LLM_MARKER, plan_command
+from src.commands import LLM_MARKER, REJECTED_MARKER, plan_command
 from src.fuzzy import correct
 from src.llm import JarvisLLM
 from src.logger import get_logger
@@ -38,8 +37,9 @@ logger = get_logger("assistant")
 
 def _is_false_positive(text: str) -> bool:
     """Отсекает ложные срабатывания: распознали только обращение."""
-    normalized = text.lower().strip().replace(",", "").replace(".", "")
-    return len(normalized.split()) <= 1 and "джарвис" in normalized
+    normalized = text.lower().strip()
+    # Совпадает только если строка состоит из "джарвис" и возможных знаков препинания/пробелов
+    return bool(re.match(r'^джарвис[,\.\s]*$', normalized))
 
 
 # ──────────────────── РАЗМЫШЛЕНИЕ И ВЫДАЧА ────────────────────
@@ -116,6 +116,10 @@ def _process_command(
         return
     corrected, response, action, phrase_key = plan
 
+    if response == REJECTED_MARKER:
+        logger.info("Команда отклонена классификатором")
+        return
+
     if response == LLM_MARKER:
         logger.info("🤔 Думаю (LLM)...")
         context = _get_window_ctx()
@@ -164,7 +168,9 @@ def _process_tail_command(
 
     # Приветствие играет, пока в фоне идут правила и LLM.
     speak_phrase("welcome")
-    thread.join()
+    thread.join(timeout=15.0)
+    if thread.is_alive():
+        logger.error("⚠️ _think завис, прерываем принудительно")
 
     plan = box.get("plan")
     if plan is None:
@@ -180,6 +186,7 @@ def _process_tail_command(
             speak_phrase("llm_thinking")
         if detector.wait_or_done(lambda: ask.done, timeout=30.0):
             logger.info("🛑 LLM прервана — начинаем заново")
+            ask.cancelled.set()
             ask.abandoned = True
             ask.stop_audio()
             return
@@ -205,11 +212,20 @@ class _AskHandle:
         self._error: Exception | None = None
         self.done = False
         self.abandoned = False  # прерван по wakeword — озвучку погасить
+        # Отмена для LLM-потока: без него брошенный запрос доживал до
+        # _run_tool() и выполнял действие через несколько секунд ПОСЛЕ
+        # прерывания (в логе 23:03 так заблокировался экран).
+        self.cancelled = threading.Event()
         self.speaker = SentenceSpeaker()
 
         def _do_ask():
             try:
-                self._answer = llm.ask(text, context=context, on_delta=self.speaker.feed)
+                self._answer = llm.ask(
+                    text,
+                    context=context,
+                    on_delta=self.speaker.feed,
+                    cancel=self.cancelled,
+                )
             except Exception as e:
                 self._error = e
             finally:
@@ -249,6 +265,7 @@ def _ask_with_interrupt(
 
     if detector.wait_or_done(lambda: ask.done, timeout=30.0):
         logger.info("🛑 LLM прервана — начинаем заново")
+        ask.cancelled.set()   # сначала отмена, потом гасим звук
         ask.stop_audio()
         ask.abandoned = True
     return ask
@@ -265,7 +282,15 @@ def _ask_no_interrupt(
     ask = _AskHandle(llm, text, context)
     if thinking_phrase:
         speak_phrase(thinking_phrase)
-    ask.thread.join()
+    
+    # Ждём максимум 30 секунд. Если LLM завис, помечаем как ошибку и идём дальше.
+    ask.thread.join(timeout=30.0)
+    if ask.thread.is_alive():
+        logger.error("⚠️ LLM-запрос в диалоге завис, прерываем")
+        ask.cancelled.set()
+        ask.abandoned = True
+        ask.stop_audio()
+        
     return ask
 
 
@@ -285,8 +310,9 @@ def _speak_with_interrupt(detector: WakewordDetector, text: str, phrase_key: str
     if interrupted:
         stop_speaking()
         logger.info("🛑 TTS прерван — начинаем заново")
-
-    tts_thread.join(timeout=1)
+        tts_thread.join(timeout=1.0)  # Ждём 1 сек ТОЛЬКО для корректного завершения после остановки
+    else:
+        tts_thread.join()  # Если не прерван, ждём полного окончания речи (без таймаута!)
 
 
 def _speak_no_interrupt(_detector: WakewordDetector, text: str, phrase_key: str | None = None):
@@ -393,7 +419,8 @@ def run():
                 # 2. Если пользователь сказал «Джарвис, открой код» —
                 #    команда уже здесь: размышление и LLM-запрос стартуют
                 #    сразу, параллельно приветствию (VAD не нужен).
-                command_text = detector.strip_wakeword(wake_text).strip()
+                raw_command = detector.strip_wakeword(wake_text).strip()
+                command_text = re.sub(r'^\s*джарвис[,\s]*', '', raw_command, flags=re.IGNORECASE).strip()
 
                 if command_text:
                     logger.info("🗣️ Команда из хвоста wakeword: %s", command_text)
@@ -425,6 +452,7 @@ def run():
             except MicrophoneError as e:
                 logger.error("⚠️ Микрофон: %s — перезапуск через 3 сек", e)
                 time.sleep(3)
+                break
             except KeyboardInterrupt:
                 metrics.log_report()
                 logger.info("\n👋 Выход")

@@ -1,6 +1,7 @@
 """Пакет команд. Собирает все модули и экспортирует plan_command."""
 
 from __future__ import annotations
+
 import re
 from typing import Any
 
@@ -22,6 +23,7 @@ _SIMPLE_HANDLERS = [apps, system, sensors, web, weather]
 _LLM_HANDLERS = [hardware]
 
 LLM_MARKER = "__LLM__"
+REJECTED_MARKER = "__REJECTED__"
 
 # Модуль-ключ -> (функция try_handle, требует llm).
 # Используется интент-веткой: intent.action_allowed -> вызов модуля.
@@ -64,7 +66,7 @@ def plan_command(text: str, llm: JarvisLLM):
         if intent_result.intent is not None and not intent_result.action_allowed:
             # Отказ по порогам — терминальный результат для командной ветки.
             # Иначе legacy-правила обходят защиту и всё равно возвращают action.
-            return LLM_MARKER, None, None
+            return REJECTED_MARKER, None, None
         if intent_result.action_allowed and intent_result.intent is not None:
             handler_result = _run_intent(intent_result.intent, t, llm)
             if handler_result is not None:

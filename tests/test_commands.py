@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.commands import LLM_MARKER, plan_command  # noqa: E402
+from src.commands import LLM_MARKER, REJECTED_MARKER, plan_command
 
 
 def test_volume_up():
@@ -54,5 +54,5 @@ def test_rejected_intent_cannot_fall_back_to_legacy(monkeypatch):
         lambda _text: IntentResult("apps.browser", 0.1, 0.0, False, True),
     )
     response, action, phrase = plan_command("открой ютуб", llm=None)
-    assert (response, action, phrase) == (LLM_MARKER, None, None)
+    assert (response, action, phrase) == (REJECTED_MARKER, None, None)
 
