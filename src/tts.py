@@ -13,10 +13,7 @@ import threading
 import time
 from pathlib import Path
 
-from silero_tts.silero_tts import SileroTTS
-
 from config import (
-    CONFIRM_SOUND,
     EARCON_TAIL_SEC,
     SILERO_MODEL,
     SILERO_SAMPLE_RATE,
@@ -25,13 +22,25 @@ from config import (
     TTS_CACHE_MAX_FILES,
     TTS_STREAM_MIN_CHARS,
 )
-
 from src.audio import pause_input, resume_input
 from src.logger import get_logger
 from src.metrics import timed
 from src.phrases import PHRASES, get_phrase_path, resolve_phrase_key
 
 logger = get_logger("tts")
+
+
+def _load_silero_tts():
+    """Загружает Silero только при фактическом запросе синтеза."""
+    try:
+        from silero_tts.silero_tts import SileroTTS
+    except ModuleNotFoundError as exc:
+        if exc.name != "silero_tts":
+            raise
+        raise RuntimeError(
+            "Для синтеза речи установите зависимость silero-tts"
+        ) from exc
+    return SileroTTS
 
 
 # ──────────────────────── СОСТОЯНИЕ ────────────────────────
@@ -95,11 +104,12 @@ def _play_file(path: str | Path):
 
 
 @timed("tts._get_voice")
-def _get_voice() -> SileroTTS:
+def _get_voice():
     global _tts
     if _tts is None:
         logger.info("[TTS] Загружаю Silero (%s)...", SILERO_SPEAKER)
-        _tts = SileroTTS(
+        silero_tts = _load_silero_tts()
+        _tts = silero_tts(
             model_id=SILERO_MODEL,
             language="ru",
             speaker=SILERO_SPEAKER,
@@ -237,9 +247,7 @@ def _fix_text(text: str) -> str:
     text = _normalize_numbers(text)
 
     # Убираем двойные пробелы после замен
-    text = re.sub(r"\s+", " ", text).strip()
-
-    return text
+    return re.sub(r"\s+", " ", text).strip()
 
 
 # ──────────────────────── ФРАЗЫ (0 сек синтеза) ────────────────────────
@@ -339,7 +347,7 @@ class SentenceSpeaker:
         self._buf = ""
         self._spoken = False
         self._stopped = threading.Event()
-        self._q: "queue.Queue[Path | None]" = queue.Queue()
+        self._q: queue.Queue[Path | None] = queue.Queue()
         self._player = threading.Thread(target=self._player_loop, daemon=True)
         self._player.start()
 
