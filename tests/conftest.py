@@ -57,9 +57,11 @@ def _has_input_device() -> bool:
     """Проверяет наличие входного аудиоустройства без падения при headless CI."""
     try:
         import sounddevice as sd
-
+    except Exception:
+        return False
+    try:
         return any(device.get("max_input_channels", 0) > 0 for device in sd.query_devices())
-    except (ImportError, OSError, RuntimeError):
+    except Exception:
         return False
 
 

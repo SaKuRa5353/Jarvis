@@ -1,5 +1,9 @@
 # Dev/Test dependencies
 pytest>=8.0
+pytest-cov>=5.0
+mypy>=1.10
+ruff>=0.6
+matplotlib>=3.8
 numpy>=1.24.0           # нужен tests/test_viterbi.py, test_features.py, test_wakeword_dtw.py
 sounddevice>=0.4.6     # импорт src.audio нужен тестам аудиобуфера и маршрутизации
 openai>=1.0.0   # нужен src.commands -> src.llm (unit-тесты plan_command)
