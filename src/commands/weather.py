@@ -59,18 +59,23 @@ _WEATHER_TRANSLATIONS = {
 
 def _fetch_weather(city: str) -> dict | None:
     url = _WTTR_URL.format(city=city)
-    try:
-        result = subprocess.run(
-            ["curl", "-s", "--max-time", str(_TIMEOUT), url],
-            capture_output=True, text=True, timeout=_TIMEOUT + 2, check=False,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            logger.warning("wttr.in вернул пусто для города '%s'", city)
-            return None
-        return json.loads(result.stdout)
-    except (subprocess.TimeoutExpired, json.JSONDecodeError) as e:
-        logger.error("Ошибка запроса погоды: %s", e)
-        return None
+    command = ["curl", "-s", "--max-time", str(_TIMEOUT), url]
+    for attempt in range(2):
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True, text=True, timeout=_TIMEOUT + 2, check=False,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout)
+                if isinstance(data, dict):
+                    return data
+            logger.warning("wttr.in вернул пустой или неполный ответ для города '%s'", city)
+        except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
+            logger.warning("Ошибка запроса погоды (попытка %d): %s", attempt + 1, exc)
+        if attempt == 0:
+            logger.info("Повторяю запрос погоды для города '%s'", city)
+    return None
 
 
 # ──────────────────────── ПАРСИНГ ────────────────────────

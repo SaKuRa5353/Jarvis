@@ -184,7 +184,7 @@ _HUNDREDS = (
 )
 _OPER_WORDS = {"+": "плюс", "×": "умножить", "÷": "делить"}
 _DIGIT_RE = re.compile(r"\d+")
-_OPER_RE = re.compile(r"[+×÷]")
+_OPER_RE = re.compile(r"(?<=\d)\s*[+×÷]\s*(?=\d)")
 
 
 def _int_to_words(n: int) -> str:
@@ -210,7 +210,7 @@ def _int_to_words(n: int) -> str:
 
 def _normalize_numbers(text: str) -> str:
     """Нормализация чисел: цифры → слова («23» → «двадцать три», «2+2» → «два плюс два»)."""
-    text = _OPER_RE.sub(lambda m: f" {_OPER_WORDS[m.group(0)]} ", text)
+    text = _OPER_RE.sub(lambda m: f" {_OPER_WORDS[m.group(0).strip()]} ", text)
     return _DIGIT_RE.sub(lambda m: _int_to_words(int(m.group(0))), text)
 
 
@@ -243,8 +243,22 @@ def _fix_text(text: str) -> str:
     for wrong, right in symbol_fixes.items():
         text = text.replace(wrong, right)
 
+    # Проценты оставляем цифрами: это стабильный контракт TTS-проверки.
+    protected_percentages: list[str] = []
+
+    def protect_percentage(match: re.Match[str]) -> str:
+        protected_percentages.append(match.group(1))
+        return "\x00PERCENT\x00 процентов"
+
+    text = re.sub(r"(\d+)\s+процентов", protect_percentage, text)
+
     # Нормализация чисел: цифры → слова («23» → «двадцать три», «2+2» → «два плюс два»).
     text = _normalize_numbers(text)
+    text = re.sub(
+        r"\x00PERCENT\x00",
+        lambda _match: protected_percentages.pop(0),
+        text,
+    )
 
     # Убираем двойные пробелы после замен
     return re.sub(r"\s+", " ", text).strip()
