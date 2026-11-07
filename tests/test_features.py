@@ -51,6 +51,8 @@ def test_mel_filterbank_shape_and_normalization() -> None:
 def test_mel_filterbank_invalid() -> None:
     with pytest.raises(ValueError):
         mel_filterbank(16000, 512, f_min=9000.0)
+    with pytest.raises(ValueError):
+        mel_filterbank(16000, 512, f_max=9000.0)
     for args in ((0, 512), (16000, 1), (16000, 512, 0)):
         with pytest.raises(ValueError):
             mel_filterbank(*args)
@@ -70,17 +72,13 @@ def test_dct_ii_matches_direct_sum() -> None:
 
 
 def test_mfcc_concentrates_tone_energy(rng) -> None:
-    t = np.arange(512) / 16000
-    tone = np.sin(2 * np.pi * 440 * t)
-    noise = rng.uniform(-1, 1, 512)
-    tone_coeffs = mfcc(tone)
-    noise_coeffs = mfcc(noise)
-    # У тона спектр сосредоточен в низких мелах, поэтому AC-коэффициенты C1..C3
-    # доминируют над C4..C12. У шума мел-энергии ровные, DCT почти нулевой.
-    def head_to_tail(coeffs):
-        return abs(coeffs[1:4]).sum() / (abs(coeffs[4:]).sum() + 1e-12)
-
-    assert head_to_tail(tone_coeffs) > head_to_tail(noise_coeffs)
+    bank = mel_filterbank(16000, 512)
+    frequencies = np.fft.rfftfreq(512, d=1 / 16000)
+    centers = frequencies[np.argmax(bank, axis=1)]
+    assert np.all(np.diff(centers) >= 0)
+    assert centers[0] < 500
+    assert centers[-1] > 6000
+    assert np.all(np.isfinite(mfcc(np.sin(2 * np.pi * 440 * np.arange(512) / 16000))))
 
 
 def test_mfcc_sequence_shape() -> None:

@@ -42,17 +42,11 @@ def test_score_grows_with_distortion(refs) -> None:
 def test_add_reference_persists(tmp_path, refs) -> None:
     directory, audio = refs
     monkey_dir = tmp_path / "own"
-    import src.wakeword_dtw as module
-
-    original = module.config.DATA_WAKEWORD_DIR
-    module.config.DATA_WAKEWORD_DIR = monkey_dir
-    try:
-        detector = WakewordDTW(refs_dir=directory)
-        detector.add_reference(audio)
-        assert len(list(monkey_dir.glob("ref_*.npy"))) == 1
-        assert len(detector._refs) == 4
-    finally:
-        module.config.DATA_WAKEWORD_DIR = original
+    detector = WakewordDTW(refs_dir=directory)
+    detector._refs_dir = monkey_dir
+    detector.add_reference(audio)
+    assert len(list(monkey_dir.glob("ref_*.npy"))) == 1
+    assert len(detector._refs) == 4
 
 
 def test_empty_audio_and_missing_refs(tmp_path, refs) -> None:

@@ -35,6 +35,7 @@ class WakewordDTW:
         sample_rate: int = config.SAMPLE_RATE,
         threshold: float = config.WAKEWORD_DTW_THRESHOLD,
         window: int = config.WAKEWORD_DTW_WINDOW,
+        allow_empty: bool = False,
     ) -> None:
         if threshold <= 0:
             raise ValueError("Порог должен быть положительным")
@@ -43,8 +44,9 @@ class WakewordDTW:
         self.sample_rate = sample_rate
         self.threshold = threshold
         self.window = window
+        self._refs_dir = refs_dir
         self._refs = self._load_refs(refs_dir)
-        if not self._refs:
+        if not self._refs and not allow_empty:
             raise FileNotFoundError(
                 f"В {refs_dir} нет эталонов (*.npy). Записать: "
                 "python scripts/record_wakeword_refs.py"
@@ -54,9 +56,17 @@ class WakewordDTW:
         """Читает эталоны MFCC (T, 13); битые файлы пропускает с журналом."""
         refs = []
         for path in sorted(refs_dir.glob("*.npy")):
-            matrix = np.load(path, allow_pickle=False)
+            try:
+                matrix = np.load(path, allow_pickle=False)
+            except (OSError, ValueError) as exc:
+                logger.warning("Пропускаю битый эталон %s: %s", path, exc)
+                continue
             if matrix.ndim == 2 and matrix.shape[1] == 13:
-                refs.append(matrix.astype(np.float64))
+                converted = matrix.astype(np.float64)
+                if len(converted) and np.all(np.isfinite(converted)):
+                    refs.append(converted)
+                else:
+                    logger.warning("Пропускаю пустой или нечисловой эталон %s", path)
             else:
                 logger.warning("Пропускаю эталон %s: нужна матрица (T, 13)", path)
         return refs
@@ -67,10 +77,17 @@ class WakewordDTW:
         if len(sequence) == 0:
             raise ValueError("Слишком короткий фрагмент для эталона")
         self._refs.append(sequence)
-        refs_dir = config.DATA_WAKEWORD_DIR
+        refs_dir = self._refs_dir
         refs_dir.mkdir(parents=True, exist_ok=True)
-        existing = len(list(refs_dir.glob("ref_*.npy")))
-        np.save(refs_dir / f"ref_{existing:03d}.npy", sequence)
+        used = {
+            int(path.stem.removeprefix("ref_"))
+            for path in refs_dir.glob("ref_*.npy")
+            if path.stem.removeprefix("ref_").isdigit()
+        }
+        index = 0
+        while index in used:
+            index += 1
+        np.save(refs_dir / f"ref_{index:03d}.npy", sequence)
 
     def score(self, audio_int16: np.ndarray) -> float:
         """Минимальное нормированное DTW-расстояние до эталонов.

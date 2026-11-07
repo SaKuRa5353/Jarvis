@@ -57,9 +57,10 @@ def mel_filterbank(
     if sr <= 0 or n_fft < 2 or n_mels < 1:
         raise ValueError("Нужны sr > 0, n_fft >= 2, n_mels >= 1")
     top = sr / 2.0 if f_max is None else f_max
-    if not 0.0 <= f_min < top:
+    if not 0.0 <= f_min < top or top > sr / 2.0:
         raise ValueError("Нужны 0 <= f_min < f_max <= sr/2")
-    edges = mel_to_hz(hz_to_mel(np.linspace(f_min, top, n_mels + 2)))
+    mel_edges = np.linspace(hz_to_mel(f_min), hz_to_mel(top), n_mels + 2)
+    edges = mel_to_hz(mel_edges)
     freqs = np.fft.rfftfreq(n_fft, d=1.0 / sr)
     bank = np.zeros((n_mels, len(freqs)), dtype=np.float64)
     for index in range(n_mels):

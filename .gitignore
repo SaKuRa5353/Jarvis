@@ -21,4 +21,9 @@ dump_*.sh
 jarvis*.txt
 .vscode/
 scripts/
+!scripts/
+!scripts/measure_stt.py
+!scripts/measure_wakeword.py
+!scripts/fit_thresholds.py
+!scripts/report.py
 .coverage
