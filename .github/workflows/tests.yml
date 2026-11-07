@@ -20,3 +20,7 @@ jobs:
           pip install -r requirements-dev.txt
       - name: Run unit tests
         run: python -m pytest -v -m "not hw"
+      - name: Run lint
+        run: python -m ruff check src/mathcore src/intent.py scripts/measure_stt.py scripts/measure_wakeword.py scripts/fit_thresholds.py scripts/report.py
+      - name: Run type checks
+        run: python -m mypy src/mathcore

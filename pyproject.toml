@@ -1,4 +1,4 @@
-# Конфигурация линтеров. Создан в рамках задачи T10.
+# Конфигурация проекта, тестов и статического анализа.
 #
 # ВАЖНО: правила ruff здесь зафиксированы явно. Без этого файла ruff включает
 # режим preview (FURB, BLE, PLW, PLR, RUF059, EXE, RUF100 для всех noqa) и
@@ -22,6 +22,13 @@ ignore = ["E501"]
 # импортируют после sys.path.insert и печатают отчёт на верхнем уровне модуля.
 "tests/check_*.py" = ["E402"]
 "tests/generate_*.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+	"hw: требует микрофон, звук или сеть (не запускается в CI)",
+]
 
 [tool.mypy]
 python_version = "3.12"

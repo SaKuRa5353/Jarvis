@@ -305,7 +305,15 @@ src/
     bayes.py         наивный Байес, char n-граммы, margin, decide
     viterbi.py       HMM + алгоритм Витерби, гистерезис
     features.py      MFCC, мел-фильтрбанк, DCT-II, DTW
+    thresholds.py    ROC, пороги, FAH, Ципф, M/M/1, статистика
+    arith.py         безопасный AST-калькулятор для tool calling
   phrases/           готовые WAV-ответы (играются мгновенно)
+
+scripts/
+  measure_stt.py       WER/CER и задержка STT
+  measure_wakeword.py TPR/FPR/FAH и ROC-AUC wakeword
+  fit_thresholds.py   подбор порогов по размеченным данным
+  report.py            сборка Markdown/JSON/CSV отчётов
 
 models/
   vosk/              модель распознавания (88 МБ)
@@ -398,8 +406,21 @@ def try_handle(text: str):
 | `viterbi.py` | HMM с бета-эмиссиями, Витерби в лог-пространстве, гистерезис | `vad.py` (`VAD_DECODER="viterbi"`, выкл. по умолчанию) |
 | `features.py` | окно Ханна, мел-фильтрбанк, MFCC, дельты, DTW | `wakeword_dtw.py` (заготовка, выкл. по умолчанию) |
 
-Подробности: [docs/THESIS_TZ.md](docs/THESIS_TZ.md) (математическая постановка),
+Подробности: [docs/MATH.md](docs/MATH.md) (формулы и API),
+[docs/THESIS_TZ.md](docs/THESIS_TZ.md) (математическая постановка),
 [docs/T6_MFCC_DTW.md](docs/T6_MFCC_DTW.md) (акустика).
+
+Покрытие mathcore — **98%** строк. Для измерений используются скрипты в
+`scripts/`: каждый поддерживает `--help`, JSON-вывод и `--self-test` без
+микрофона и Ollama. При отсутствии matplotlib отчёт сохраняется в CSV.
+
+## 🧪 Проверка проекта
+
+```fish
+make ci       # pytest без hw-тестов, ruff и mypy
+make bench    # синтетическая проверка измерительного контура
+make report   # синтетический Markdown/CSV-отчёт
+```
 
 ## 🙏 Благодарности
 
