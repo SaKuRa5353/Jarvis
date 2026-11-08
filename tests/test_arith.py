@@ -64,6 +64,23 @@ def test_bare_function_name_is_rejected(expression: str) -> None:
         safe_eval(expression)
 
 
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("sin(pi/2)", 1.0),
+        ("cos(0)", 1.0),
+        ("cos(pi/4)", math.cos(math.pi / 4)),
+        ("sin(0)", 0.0),
+        ("tan(0)", 0.0),
+        ("sin(tau)", 0.0),
+        ("exp(0)", 1.0),
+        ("log(e)", 1.0),
+    ],
+)
+def test_safe_eval_trig_and_transcendental(expression: str, expected: float) -> None:
+    assert math.isclose(safe_eval(expression), expected, rel_tol=1e-9, abs_tol=1e-12)
+
+
 def test_safe_eval_rejects_limits_and_invalid_limit() -> None:
     with pytest.raises(ArithError):
         safe_eval("1+2", max_nodes=0)
@@ -95,3 +112,7 @@ def test_legacy_adapter_and_tool_keep_none_contract(expression: str) -> None:
 
 def test_calculate_tool_keeps_expression_schema_and_answer_format() -> None:
     assert execute_tool("calculate", {"expression": "2+2"}) == ("4", None)
+
+
+def test_calculate_tool_sin_pi_over_2() -> None:
+    assert execute_tool("calculate", {"expression": "sin(pi/2)"}) == ("1", None)

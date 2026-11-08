@@ -56,13 +56,13 @@ def _cer(reference: str, hypothesis: str) -> float:
 
 def _recognize_vosk(audio: np.ndarray, sample_rate: int) -> str:
     try:
-        from vosk import KaldiRecognizer
+        from vosk import KaldiRecognizer  # type: ignore[import-untyped]
 
         from src.vosk_model import get_vosk_model, text_of
     except ModuleNotFoundError as exc:
         raise RuntimeError("backend vosk недоступен") from exc
     recognizer = KaldiRecognizer(get_vosk_model(), sample_rate)
-    for start in range(0, len(audio), 4000):
+    for start in range(0, len(audio), 2000):
         recognizer.AcceptWaveform(audio[start : start + 2000].tobytes())
     return text_of(recognizer.FinalResult())
 
@@ -103,6 +103,8 @@ def measure(audio_dir: Path, golden: dict[str, str], backends: list[str], verbos
                     "backend": backend,
                     "file": name,
                     "status": "ok",
+                    "reference": reference_text,
+                    "hypothesis": hypothesis,
                     "wer": (substitutions + deletions + insertions) / total if total else 0.0,
                     "cer": _cer(reference_text, hypothesis),
                     "S": substitutions,
@@ -112,7 +114,14 @@ def measure(audio_dir: Path, golden: dict[str, str], backends: list[str], verbos
                     "latency_ms": latency_ms,
                 })
             except (OSError, RuntimeError, ValueError) as exc:
-                results.append({"backend": backend, "file": name, "status": "unavailable", "error": str(exc)})
+                results.append({
+                    "backend": backend,
+                    "file": name,
+                    "status": "unavailable",
+                    "reference": reference_text,
+                    "hypothesis": None,
+                    "error": str(exc),
+                })
                 if verbose:
                     print(f"[{backend}] {name}: {exc}")
     summary: list[dict[str, Any]] = []

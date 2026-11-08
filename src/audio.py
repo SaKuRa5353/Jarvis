@@ -25,7 +25,6 @@ from config import (
     DEVICE,
     SAMPLE_RATE,
 )
-
 from src.logger import get_logger
 
 logger = get_logger("audio")
@@ -39,12 +38,43 @@ logger = get_logger("audio")
 _input_paused = threading.Event()
 
 
-def pause_input():
+def validate_input_device(sd: Any, requested_device: int) -> int:
+    """Проверяет пригодность аудиоустройства для записи (входных каналов > 0).
+
+    Функция действует как валидатор: если указано устройство и оно не подходит,
+    выдаётся понятная ошибка с индексом и подсказкой. Автоподбор других устройств
+    не выполняется.
+    """
+    try:
+        devices = sd.query_devices()
+    except Exception as exc:
+        raise MicrophoneError(f"Не удалось получить список аудиоустройств: {exc}") from exc
+
+    if not devices:
+        raise MicrophoneError("В системе не найдено ни одного аудиоустройства.")
+
+    if not (0 <= requested_device < len(devices)):
+        raise MicrophoneError(
+            f"Устройство #{requested_device} не существует (всего устройств: {len(devices)}). "
+            f"Проверьте JARVIS_DEVICE или передайте --device."
+        )
+
+    info = devices[requested_device]
+    if info.get("max_input_channels", 0) > 0:
+        return requested_device
+
+    raise MicrophoneError(
+        f"Устройство #{requested_device} ({info.get('name', 'неизвестно')}) не имеет входных каналов "
+        "(микрофона). Укажите JARVIS_DEVICE или --device для выбора другого устройства."
+    )
+
+
+def pause_input() -> None:
     """Перестать раздавать аудио подписчикам (идёт озвучка)."""
     _input_paused.set()
 
 
-def resume_input():
+def resume_input() -> None:
     """Снова раздавать аудио (озвучка закончилась)."""
     _input_paused.clear()
 
@@ -62,11 +92,11 @@ class BroadcastBuffer:
         self._lock = threading.Lock()
         self._mic = mic
 
-    def check(self):
+    def check(self) -> None:
         if self._mic is not None:
             self._mic.check()
 
-    def push(self, block: bytes):
+    def push(self, block: bytes) -> None:
         """Добавляет блок и разсылает подписчикам.
 
         Во время паузы (говорит TTS) блок не попадает ни в историю,
@@ -90,7 +120,7 @@ class BroadcastBuffer:
             sub._offer(block)
         return sub
 
-    def unsubscribe(self, sub: Subscriber):
+    def unsubscribe(self, sub: Subscriber) -> None:
         """Отписывает подписчика от буфера."""
         with self._lock:
             if sub in self._subscribers:
@@ -111,7 +141,7 @@ class Subscriber:
 
     # ── внутреннее для BroadcastBuffer ──
 
-    def _offer(self, block: bytes):
+    def _offer(self, block: bytes) -> None:
         if self._q.full():
             with contextlib.suppress(queue.Empty):
                 self._q.get_nowait()  # отстал — выбрасываем старый блок
@@ -160,7 +190,7 @@ class Subscriber:
         """То же, что read(), но сразу в bytes для Vosk."""
         return self.read(n_samples, timeout).tobytes()
 
-    def drain(self):
+    def drain(self) -> None:
         """Выбрасывает накопленное аудио."""
         self._leftover = np.zeros(0, dtype=np.int16)
         while True:
@@ -169,11 +199,11 @@ class Subscriber:
             except queue.Empty:
                 break
 
-    def check(self):
+    def check(self) -> None:
         """Бросает MicrophoneError, если поток читателя умер."""
         self._broadcast.check()
 
-    def close(self):
+    def close(self) -> None:
         """Отписывает от буфера."""
         self._broadcast.unsubscribe(self)
 
@@ -206,7 +236,7 @@ class Microphone:
 
     # ──────────────────── ЖИЗНЕННЫЙ ЦИКЛ ────────────────────
 
-    def start(self) -> "Microphone":
+    def start(self) -> Microphone:
         """Открывает поток и запускает фоновый читатель."""
         if self._stream is not None:
             return self
@@ -216,7 +246,10 @@ class Microphone:
 
         # sounddevice загружается только при реальном открытии микрофона.
         # Это позволяет тестировать буфер и маршрутизацию в headless CI.
-        import sounddevice as sd
+        import sounddevice as sd  # type: ignore[import-untyped]
+
+        valid_device = validate_input_device(sd, self.device)
+        self.device = valid_device
 
         self._stream = sd.RawInputStream(
             samplerate=self.sample_rate,
@@ -242,7 +275,7 @@ class Microphone:
         )
         return self
 
-    def stop(self):
+    def stop(self) -> None:
         """Останавливает читателя и закрывает поток."""
         self._stop.set()
 
@@ -261,10 +294,10 @@ class Microphone:
         self.drain()
         logger.info("🎙️ Микрофон закрыт")
 
-    def __enter__(self) -> "Microphone":
+    def __enter__(self) -> Microphone:
         return self.start()
 
-    def __exit__(self, *_):
+    def __exit__(self, *args: object) -> None:
         self.stop()
 
     # ──────────────────── ПОДПИСКА ────────────────────
@@ -273,11 +306,11 @@ class Microphone:
         """Возвращает подписчика, который можно читать как старый mic.read()."""
         return self._broadcast.subscribe(maxsize)
 
-    def unsubscribe(self, sub: Subscriber):
+    def unsubscribe(self, sub: Subscriber) -> None:
         """Отписывает подписчика от буфера."""
         self._broadcast.unsubscribe(sub)
 
-    def drain(self):
+    def drain(self) -> None:
         """Выбрасывает накопленное аудио у всех подписчиков и из истории.
         Вызывать при смене фазы цикла, чтобы VAD не начинал с речи,
         сказанной во время wakeword."""
@@ -287,14 +320,14 @@ class Microphone:
         for sub in subs:
             sub.drain()
 
-    def check(self):
+    def check(self) -> None:
         """Бросает MicrophoneError, если поток читателя умер."""
         if self._error is not None:
             raise MicrophoneError(self._error)
 
     # ──────────────────── ВНУТРЕННЕЕ ────────────────────
 
-    def _reader_loop(self):
+    def _reader_loop(self) -> None:
         """Фоновый читатель: микрофон -> BroadcastBuffer."""
         stream = self._stream
         while not self._stop.is_set():

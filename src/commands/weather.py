@@ -207,7 +207,7 @@ def _extract_city(text: str) -> str:
     return ""
 
 
-def try_handle(text: str):
+def try_handle(text: str) -> tuple[str, None, None] | None:
     if not any(w in text for w in _TRIGGERS):
         return None
 
@@ -220,6 +220,12 @@ def try_handle(text: str):
     if data is None:
         return "Не могу получить данные о погоде. Проверь интернет.", None, None
 
-    if is_tomorrow:
-        return _format_tomorrow(data, city), None, None
-    return _format_current(data, city), None, None
+    response = _format_tomorrow(data, city) if is_tomorrow else _format_current(data, city)
+
+    # Если форматирование вернуло обрывочную строку (редкий кейс неполного JSON),
+    # возвращаем понятный отказ, чтобы ассистент не озвучил случайный осколок.
+    if not response or len(response.split()) < 3:
+        logger.warning("Запрос погоды для '%s' вернул неполный ответ", city)
+        return "Не могу получить данные о погоде. Проверь интернет.", None, None
+
+    return response, None, None
