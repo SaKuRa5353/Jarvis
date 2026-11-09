@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import subprocess
 from types import SimpleNamespace
-from typing import Any
 
 import pytest
 
@@ -179,3 +178,12 @@ class TestTryHandleEmptyResponseGuard:
         result = weather.try_handle("погода")
         assert result is not None
         assert result[0] == "Не могу получить данные о погоде. Проверь интернет."
+
+
+def test_city_normalization_and_url_encoding() -> None:
+    """Проверка нормализации склоняемых городов и экранирования URL."""
+    assert weather.normalize_city_name("москве") == "Москва"
+    assert weather.normalize_city_name("питере") == "Санкт-Петербург"
+    assert weather.normalize_city_name("самаре") == "Самара"
+    assert weather._extract_city("какая погода в Москве") == "Москва"
+    assert weather._extract_city("погода в питере") == "Санкт-Петербург"

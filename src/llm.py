@@ -9,7 +9,10 @@
 одним куском в конце — подтверждения всё равно готовые фразы).
 """
 
+from __future__ import annotations
+
 import threading
+from collections.abc import Callable
 from types import SimpleNamespace
 
 from openai import OpenAI
@@ -18,19 +21,18 @@ from config import (
     LLM_EMPTY_FALLBACK,
     LLM_MAX_TOKENS,
     LLM_MODEL,
-    LLM_THINKING,
-    LLM_THINKING_MAX_TOKENS,
-    LLM_THINK_MODE,
     LLM_NUM_THREADS,
     LLM_SYSTEM_PROMPT,
     LLM_TEMPERATURE,
+    LLM_THINK_MODE,
+    LLM_THINKING,
+    LLM_THINKING_MAX_TOKENS,
     LLM_TIMEOUT_SEC,
     LLM_TOOLS_HINT,
     LLM_TOOLS_MAX_TOKENS,
     MAX_HISTORY_MESSAGES,
     OLLAMA_BASE_URL,
 )
-
 from src.llm_tools import TOOLS, execute_tool
 from src.logger import get_logger
 from src.metrics import timed
@@ -53,7 +55,7 @@ def junk_phrase(answer: str) -> str | None:
 
 
 class JarvisLLM:
-    def __init__(self, model: str = LLM_MODEL):
+    def __init__(self, model: str = LLM_MODEL) -> None:
         self.client = OpenAI(
             base_url=OLLAMA_BASE_URL,
             api_key="ollama",
@@ -62,10 +64,10 @@ class JarvisLLM:
         self.model = model
         self.history: list[dict] = []
 
-    def clear_history(self):
+    def clear_history(self) -> None:
         self.history = []
 
-    def _trim_history(self):
+    def _trim_history(self) -> None:
         if len(self.history) > MAX_HISTORY_MESSAGES:
             self.history = self.history[-MAX_HISTORY_MESSAGES:]
 
@@ -74,7 +76,7 @@ class JarvisLLM:
         self,
         text: str,
         context: str | None = None,
-        on_delta=None,
+        on_delta: Callable[[str], None] | None = None,
         cancel: threading.Event | None = None,
     ) -> tuple[str, str | None] | None:
         """Отправляет запрос в LLM с tools (function calling).
@@ -94,9 +96,11 @@ class JarvisLLM:
         if context:
             system_prompt = f"{system_prompt}\n{context}"
 
-        messages = [{"role": "system", "content": system_prompt}]
-        messages.extend(self.history)
-        messages.append({"role": "user", "content": text})
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            *self.history,
+            {"role": "user", "content": text},
+        ]
 
         # tools передаются всегда → фактический лимит LLM_TOOLS_MAX_TOKENS.
         # LLM_MAX_TOKENS применяется, только если tools отключат.
@@ -130,8 +134,11 @@ class JarvisLLM:
             extra_body=extra_body,
             **extra,
         )
+
         finish_reason: str | None = None
         reasoning_text = ""
+        raw: str | None = None
+        tool_calls: list[object] | None = None
 
         try:
             if on_delta is None:
@@ -165,9 +172,12 @@ class JarvisLLM:
         if raw is None:
             logger.warning("[LLM] пустой ответ")
             return None
+        # Сырой JSON в поле content не обрабатываем — только структурированные
+        # tool_calls проходят маршрутизацию через execute_tool(). Это
+        # предотвращает случайное озвучивание служебных конструкций и
+        # выполнение произвольного кода.
         answer = raw.strip()
-
-    # Пустой ответ = thinking съел весь бюджет, content не отдан.
+        # Пустой ответ = thinking съел весь бюджет, content не отдан.
         # Озвучивать нечего: без подмены TTS синтезирует тишину (~1.5 с).
         if not answer:
             logger.warning(
@@ -197,7 +207,10 @@ class JarvisLLM:
         return answer, None
 
     def _ask_streaming(
-        self, on_delta, cancel: threading.Event | None = None, **request
+        self,
+        on_delta: Callable[[str], None],
+        cancel: threading.Event | None = None,
+        **request: object,
     ) -> tuple[str | None, list | None, str | None]:
         """Стриминговый запрос: текст уходит в on_delta, tool-вызовы копятся.
 
@@ -209,7 +222,9 @@ class JarvisLLM:
         calls: dict[int, dict] = {}
         finish: str | None = None
 
-        for chunk in self.client.chat.completions.create(**request, stream=True):
+        for chunk in self.client.chat.completions.create(  # type: ignore[call-overload]
+            **request, stream=True
+        ):
             if cancel is not None and cancel.is_set():
                 logger.info("[LLM] стриминг прерван по отмене")
                 break
@@ -229,7 +244,7 @@ class JarvisLLM:
             )
             if rdelta:
                 reasoning_parts.append(rdelta)
-            if delta.content:
+            if getattr(delta, "content", None):
                 parts.append(delta.content)
                 on_delta(delta.content)
             for tc in getattr(delta, "tool_calls", None) or ():
@@ -256,23 +271,26 @@ class JarvisLLM:
             logger.debug("[LLM reasoning stream] %s", "".join(reasoning_parts)[:300])
         return "".join(parts), None, finish
 
-    def _run_tool(self, call) -> tuple[str, str | None]:
+    def _run_tool(self, call: object) -> tuple[str, str | None]:
         """Выполняет выбранный моделью tool."""
-        result = execute_tool(call.function.name, call.function.arguments)
+        func = getattr(call, "function", None)
+        name = getattr(func, "name", None) if func is not None else None
+        arguments = getattr(func, "arguments", None) if func is not None else None
+        if not name or not isinstance(arguments, str):
+            logger.warning("[tool] невалидный объект вызова: %r", call)
+            return "Не расслышал", "not_listened"
+        result = execute_tool(name, arguments)
         if result is None:
-            logger.warning(
-                "[tool] %s(%s) — невалидные аргументы",
-                call.function.name, call.function.arguments,
-            )
+            logger.warning("[tool] %s(%s) — невалидные аргументы", name, arguments)
             return "Не расслышал", "not_listened"
         answer, phrase_key = result
-        logger.info("[tool] %s(%s) → %s", call.function.name, call.function.arguments, answer)
+        logger.info("[tool] %s(%s) → %s", name, arguments, answer)
         # Подтверждения действий НЕ пишем в историю: 3B-модель
         # начинает копировать их («открой X» → «Открываю вконтакт»)
         # на следующем запросе.
         return answer, phrase_key
 
-    def _append_history(self, text: str, answer: str):
+    def _append_history(self, text: str, answer: str) -> None:
         self.history.append({"role": "user", "content": text})
         self.history.append({"role": "assistant", "content": answer})
         self._trim_history()

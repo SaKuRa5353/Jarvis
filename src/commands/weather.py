@@ -3,6 +3,7 @@
 import json
 import re
 import subprocess
+from urllib.parse import quote
 
 from src.logger import get_logger
 
@@ -57,8 +58,40 @@ _WEATHER_TRANSLATIONS = {
 
 # ──────────────────────── ЗАПРОС ────────────────────────
 
+# Словарь известных падежных форм популярных городов в Именительный падеж
+_KNOWN_CITIES_CASES: dict[str, str] = {
+    "москве": "Москва",
+    "москву": "Москва",
+    "питере": "Санкт-Петербург",
+    "петербурге": "Санкт-Петербург",
+    "санкт-петербурге": "Санкт-Петербург",
+    "самаре": "Самара",
+    "самару": "Самара",
+    "казани": "Казань",
+    "казань": "Казань",
+    "петрозаводске": "Петрозаводск",
+    "петрозаводск": "Петрозаводск",
+    "новосибирске": "Новосибирск",
+    "сочи": "Сочи",
+}
+
+
+def normalize_city_name(raw_city: str) -> str:
+    """Нормализует название города из предложного/другого падежа в именительный."""
+    if not raw_city:
+        return ""
+    clean = raw_city.strip().lower()
+    if clean in _KNOWN_CITIES_CASES:
+        return _KNOWN_CITIES_CASES[clean]
+    # Если город оканчивается на «е» (например, «Перми»/«Воронеже»), аккуратный fallback
+    if len(clean) > 4 and clean.endswith("е"):
+        return (clean[:-1] + "ъ").replace("ъ", "").capitalize()
+    return raw_city.strip().capitalize()
+
+
 def _fetch_weather(city: str) -> dict | None:
-    url = _WTTR_URL.format(city=city)
+    encoded_city = quote(city)
+    url = _WTTR_URL.format(city=encoded_city)
     command = ["curl", "-s", "--max-time", str(_TIMEOUT), url]
     for attempt in range(2):
         try:
@@ -191,20 +224,22 @@ _TRIGGERS = ["погод", "температур", "дожд", "солнечн",
 
 def _extract_city(text: str) -> str:
     """Извлекает город из фразы 'погода в Москве' → 'Москва'."""
+    raw = ""
     # Ищем "в <Город>" после слова погода/прогноз
     match = re.search(
         r"(?:погод\w*|прогноз\w*)\s+в\s+([а-яёa-z\-]+)",
         text, re.IGNORECASE,
     )
     if match:
-        return match.group(1).strip().capitalize()
+        raw = match.group(1).strip()
 
-    # Общий паттерн "в <Город>"
-    match = re.search(r"\bв\s+([А-ЯЁ][а-яё\-]+)", text)
-    if match:
-        return match.group(1)
+    if not raw:
+        # Общий паттерн "в <Город>"
+        match = re.search(r"\bв\s+([А-ЯЁа-яё\-]+)", text)
+        if match:
+            raw = match.group(1).strip()
 
-    return ""
+    return normalize_city_name(raw) if raw else ""
 
 
 def try_handle(text: str) -> tuple[str, None, None] | None:
