@@ -14,6 +14,7 @@ from __future__ import annotations
 import collections
 import contextlib
 import queue
+import re
 import threading
 from typing import Any
 
@@ -23,6 +24,8 @@ from config import (
     AUDIO_BLOCK_SIZE,
     AUDIO_BUFFER_SEC,
     DEVICE,
+    DEVICE_NAME,
+    HOSTAPI,
     SAMPLE_RATE,
 )
 from src.logger import get_logger
@@ -35,38 +38,271 @@ logger = get_logger("audio")
 # распознаётся как команда («Делаю громче» → снова «громче» → петля).
 # На время воспроизведения фан-аут перестает раздавать блоки.
 
+
+class StreamResampler:
+    """Потоковый ресемплер с фазово выровненной фильтровой историей."""
+
+    def __init__(self, orig_sr: int, target_sr: int, quality_window_len: int = 64) -> None:
+        import math
+
+        from scipy.signal import resample_poly
+
+        self.orig_sr = orig_sr
+        self.target_sr = target_sr
+        g = math.gcd(target_sr, orig_sr)
+        self.up = target_sr // g
+        self.down = orig_sr // g
+        if self.up == self.down == 1:
+            self._flushed = False
+            return
+
+        half_len = 10 * max(self.up, self.down)
+        pre_pad = self.down - half_len % self.down
+        filter_len = 2 * half_len + 1 + pre_pad
+        # Один радиус нужен для будущего выхода, а запас в четыре длины
+        # фильтра скрывает искусственную границу внутреннего resample_poly.
+        required_context = int(np.ceil(2 * filter_len / self.up))
+        context_len = int(np.ceil(4 * filter_len / self.up))
+        self.overlap_len = max(quality_window_len, context_len)
+        self.overlap_len = (
+            (self.overlap_len + self.down - 1) // self.down
+        ) * self.down
+        self._future_len = required_context
+        self._history = np.zeros(0, dtype=np.int16)
+        self._history_start = 0
+        self._input_total = 0
+        self._output_total = 0
+        self._flushed = False
+        self._resample_poly = resample_poly
+
+    def resample(self, block_int16: np.ndarray) -> np.ndarray:
+        """Ресемплирует блок; хвост фильтра выдаётся методом ``flush``."""
+        if self.orig_sr == self.target_sr:
+            return block_int16.copy()
+        if self._flushed:
+            raise RuntimeError("Нельзя добавлять блок после flush()")
+        if block_int16.ndim != 1 or block_int16.dtype != np.int16:
+            raise ValueError("Ожидается одномерный массив dtype=int16")
+
+        previous_total = self._input_total
+        combined = np.concatenate([self._history, block_int16])
+        segment_start = self._history_start
+        self._input_total += len(block_int16)
+        return self._process_segment(
+            combined,
+            segment_start=segment_start,
+            previous_total=previous_total,
+            stable_end=max(
+                self._output_total,
+                (self._input_total - self._future_len) * self.up // self.down,
+            ),
+        )
+
+    def flush(self) -> np.ndarray:
+        """Выдаёт задержанный хвост, дополняя вход нулями."""
+        if self.orig_sr == self.target_sr or self._flushed:
+            return np.zeros(0, dtype=np.int16)
+        self._flushed = True
+        expected_end = (self._input_total * self.up + self.down - 1) // self.down
+        combined = np.concatenate(
+            [self._history, np.zeros(self._future_len, dtype=np.int16)]
+        )
+        return self._process_segment(
+            combined,
+            segment_start=self._history_start,
+            previous_total=self._input_total,
+            stable_end=expected_end,
+        )
+
+    def _process_segment(
+        self,
+        combined: np.ndarray,
+        *,
+        segment_start: int,
+        previous_total: int,
+        stable_end: int,
+    ) -> np.ndarray:
+        """Обрабатывает сегмент и сохраняет правый фильтровый контекст."""
+        segment_output = self._resample_poly(
+            combined.astype(np.float32), self.up, self.down
+        )
+        segment_offset = segment_start * self.up // self.down
+        start = max(self._output_total, segment_offset)
+        end = min(stable_end, segment_offset + len(segment_output))
+        if end <= start:
+            result = np.zeros(0, dtype=np.int16)
+        else:
+            result = segment_output[start - segment_offset : end - segment_offset]
+            result = np.clip(result, -32768, 32767).astype(np.int16)
+            self._output_total = end
+
+        if not self._flushed:
+            end_input = previous_total + len(combined) - len(self._history)
+            self._save_history(combined, segment_start, end_input)
+        return result
+
+    def _save_history(self, combined: np.ndarray, segment_start: int, end: int) -> None:
+        """Сохраняет правый контекст с началом на границе down."""
+        new_start = max(0, ((end - self.overlap_len) // self.down) * self.down)
+        offset = new_start - segment_start
+        self._history = combined[offset:]
+        self._history_start = new_start
+
+
 _input_paused = threading.Event()
 
 
-def validate_input_device(sd: Any, requested_device: int) -> int:
-    """Проверяет пригодность аудиоустройства для записи (входных каналов > 0).
+def _normalized_device_name(name: str) -> str:
+    """Убирает меняющуюся ALSA-пару ``(hw:card,device)`` из имени."""
+    normalized = re.sub(r"\s*\(hw:\d+,\d+\)\s*$", "", name.strip(), flags=re.IGNORECASE)
+    return " ".join(normalized.split()).casefold()
 
-    Функция действует как валидатор: если указано устройство и оно не подходит,
-    выдаётся понятная ошибка с индексом и подсказкой. Автоподбор других устройств
-    не выполняется.
+
+def _hostapi_name(sd: Any, device: dict[str, Any]) -> str:
+    """Возвращает имя host API без падения на неполной fake sounddevice."""
+    hostapi = device.get("hostapi")
+    try:
+        hostapis = sd.query_hostapis()
+        if isinstance(hostapi, int) and 0 <= hostapi < len(hostapis):
+            return str(hostapis[hostapi].get("name", hostapi))
+    except Exception:
+        pass
+    return str(hostapi if hostapi is not None else "неизвестно")
+
+
+def _hostapi_matches(
+    sd: Any, device: dict[str, Any], requested_hostapi: str | int
+) -> bool:
+    requested = str(requested_hostapi).strip().casefold()
+    actual = str(device.get("hostapi", "")).casefold()
+    return requested == actual or requested == _hostapi_name(sd, device).casefold()
+
+
+def select_input_device(
+    sd: Any,
+    requested_device: int | None = None,
+    requested_name: str | None = None,
+    requested_hostapi: str | int | None = None,
+) -> int:
+    """Выбирает индекс входного устройства на текущем запуске.
+
+    Приоритет: устойчивое имя (+ host API), legacy-индекс, системный input.
+    Имя сравнивается без ALSA-суффикса ``(hw:N,M)``. Неоднозначный результат
+    никогда не разрешается угадыванием.
     """
     try:
         devices = sd.query_devices()
     except Exception as exc:
         raise MicrophoneError(f"Не удалось получить список аудиоустройств: {exc}") from exc
-
     if not devices:
         raise MicrophoneError("В системе не найдено ни одного аудиоустройства.")
 
-    if not (0 <= requested_device < len(devices)):
+    if requested_name:
+        inputs = [
+            (index, info)
+            for index, info in enumerate(devices)
+            if int(info.get("max_input_channels", 0)) > 0
+        ]
+        if not inputs:
+            raise MicrophoneError("В списке нет устройств с входными каналами (микрофонов).")
+        normalized = _normalized_device_name(requested_name)
+        matches = [
+            (index, info)
+            for index, info in inputs
+            if _normalized_device_name(str(info.get("name", ""))) == normalized
+        ]
+        if requested_hostapi is not None:
+            matches = [
+                (index, info)
+                for index, info in matches
+                if _hostapi_matches(sd, info, requested_hostapi)
+            ]
+        if len(matches) == 1:
+            return matches[0][0]
+        if not matches:
+            suffix = f" и host API {requested_hostapi!r}" if requested_hostapi else ""
+            raise MicrophoneError(f"Устройство с именем {requested_name!r}{suffix} не найдено.")
+        details = ", ".join(f"#{index} {info.get('name', '')}" for index, info in matches)
         raise MicrophoneError(
-            f"Устройство #{requested_device} не существует (всего устройств: {len(devices)}). "
-            f"Проверьте JARVIS_DEVICE или передайте --device."
+            f"Имя устройства {requested_name!r} неоднозначно: {details}. "
+            "Укажите JARVIS_HOSTAPI."
         )
 
-    info = devices[requested_device]
-    if info.get("max_input_channels", 0) > 0:
+    if requested_device is not None and requested_device >= 0:
+        if requested_device >= len(devices):
+            raise MicrophoneError(
+                f"Устройство #{requested_device} не существует (всего устройств: {len(devices)})."
+            )
+        if int(devices[requested_device].get("max_input_channels", 0)) <= 0:
+            raise MicrophoneError(
+                f"Устройство #{requested_device} ({devices[requested_device].get('name', 'неизвестно')}) "
+                "не имеет входных каналов (микрофона)."
+            )
         return requested_device
 
-    raise MicrophoneError(
-        f"Устройство #{requested_device} ({info.get('name', 'неизвестно')}) не имеет входных каналов "
-        "(микрофона). Укажите JARVIS_DEVICE или --device для выбора другого устройства."
+    inputs = [
+        (index, info)
+        for index, info in enumerate(devices)
+        if int(info.get("max_input_channels", 0)) > 0
+    ]
+    if not inputs:
+        raise MicrophoneError("В списке нет устройств с входными каналами (микрофонов).")
+
+    try:
+        default_device = sd.default.device[0]
+    except (AttributeError, IndexError, TypeError):
+        default_device = None
+    if not isinstance(default_device, int) or not 0 <= default_device < len(devices):
+        raise MicrophoneError(
+            "Системное устройство ввода не определено. "
+            "Укажите JARVIS_DEVICE_NAME или JARVIS_DEVICE."
+        )
+    if int(devices[default_device].get("max_input_channels", 0)) <= 0:
+        raise MicrophoneError(
+            f"Системное устройство ввода #{default_device} не имеет входных каналов. "
+            "Укажите JARVIS_DEVICE_NAME или JARVIS_DEVICE."
+        )
+    return default_device
+
+
+def validate_input_device(
+    sd: Any,
+    requested_device: int | None = None,
+    target_sr: int = 16000,
+    requested_name: str | None = None,
+    requested_hostapi: str | int | None = None,
+) -> tuple[int, int]:
+    """Проверяет пригодность аудиоустройства для записи и подбирает частоту.
+
+    Функция действует как валидатор: если указано устройство и оно не подходит,
+    выдаётся понятная ошибка. Если устройство поддерживает target_sr, возвращает её.
+    Иначе возвращает дефолтную частоту устройства для последующего ресемплинга.
+
+    Returns:
+        (device_index, actual_samplerate)
+    """
+    device_index = select_input_device(
+        sd, requested_device, requested_name, requested_hostapi
     )
+    info = sd.query_devices()[device_index]
+
+    # Проверяем поддержку целевой частоты
+    try:
+        sd.check_input_settings(
+            device=device_index, channels=1, samplerate=target_sr, dtype="int16"
+        )
+        return device_index, target_sr
+    except Exception:
+        # Целевая частота не поддерживается напрямую.
+        # Используем дефолтную частоту устройства.
+        native_sr = int(info.get("default_samplerate", 44100))
+        logger.info(
+            "Устройство #%d не поддерживает %d Hz, будет использован ресемплинг из %d Hz",
+            device_index,
+            target_sr,
+            native_sr,
+        )
+        return device_index, native_sr
 
 
 def pause_input() -> None:
@@ -170,7 +406,7 @@ class Subscriber:
                 raw = self._q.get(timeout=timeout)
                 chunk = np.frombuffer(raw, dtype=np.int16)
                 if len(chunk) > n_samples - got:
-                    self._leftover = chunk[n_samples - got:]
+                    self._leftover = chunk[n_samples - got :]
                     chunk = chunk[: n_samples - got]
                 parts.append(chunk)
                 got += len(chunk)
@@ -179,8 +415,7 @@ class Subscriber:
             if parts:
                 rest = parts[-1]
                 self._leftover = (
-                    rest if not len(self._leftover)
-                    else np.concatenate([rest, self._leftover])
+                    rest if not len(self._leftover) else np.concatenate([rest, self._leftover])
                 )
             raise TimeoutError from None
 
@@ -217,7 +452,7 @@ class Microphone:
 
     def __init__(
         self,
-        device: int = DEVICE,
+        device: int | None = DEVICE,
         sample_rate: int = SAMPLE_RATE,
         block_size: int = AUDIO_BLOCK_SIZE,
         buffer_sec: float = AUDIO_BUFFER_SEC,
@@ -248,12 +483,28 @@ class Microphone:
         # Это позволяет тестировать буфер и маршрутизацию в headless CI.
         import sounddevice as sd  # type: ignore[import-untyped]
 
-        valid_device = validate_input_device(sd, self.device)
+        valid_device, actual_sr = validate_input_device(
+            sd,
+            self.device,
+            self.sample_rate,
+            requested_name=DEVICE_NAME,
+            requested_hostapi=HOSTAPI,
+        )
         self.device = valid_device
+        self._actual_samplerate = actual_sr
 
+        # Если частота отличается, создаем потоковый ресемплер и корректируем размер блока
+        if actual_sr != self.sample_rate:
+            self._resampler = StreamResampler(actual_sr, self.sample_rate)
+            self._input_block_size = int(actual_sr * (self.block_size / self.sample_rate))
+        else:
+            self._resampler = None
+            self._input_block_size = self.block_size
+
+        device_info = sd.query_devices()[self.device]
         self._stream = sd.RawInputStream(
-            samplerate=self.sample_rate,
-            blocksize=self.block_size,
+            samplerate=self._actual_samplerate,
+            blocksize=self._input_block_size,
             device=self.device,
             dtype="int16",
             channels=1,
@@ -268,9 +519,15 @@ class Microphone:
         self._thread.start()
 
         logger.info(
-            "🎙️ Микрофон #%s открыт (%d Hz, блок %d)",
+            "🎙️ Микрофон #%s открыт: %s, host API=%s, входов=%d, %d Hz -> %d Hz, "
+            "ресемплинг=%s, блок %d",
             self.device,
+            device_info.get("name", "неизвестно"),
+            _hostapi_name(sd, device_info),
+            device_info.get("max_input_channels", 0),
+            self._actual_samplerate,
             self.sample_rate,
+            self._actual_samplerate != self.sample_rate,
             self.block_size,
         )
         return self
@@ -330,19 +587,31 @@ class Microphone:
     def _reader_loop(self) -> None:
         """Фоновый читатель: микрофон -> BroadcastBuffer."""
         stream = self._stream
+        input_block_size = self._input_block_size
+
         while not self._stop.is_set():
             try:
-                data, overflowed = stream.read(self.block_size)
+                data, overflowed = stream.read(input_block_size)
             except Exception as e:
                 if self._stop.is_set():
                     # штатная остановка — не считаем это падением потока
                     break
-                self._error = f"поток микрофона упал: {e}"
+                self._error = (
+                    "аудиоустройство отключено или поток микрофона недоступен: "
+                    f"{e}. Подключите устройство и перезапустите Jarvis."
+                )
                 logger.error("[mic] %s", self._error)
                 return
 
             if overflowed:
                 logger.debug("[mic] overflow — часть аудио пропущена")
 
-            raw = bytes(data)
+            if self._resampler is not None:
+                # Потоковый ресемплинг с антиалиасингом и предысторией
+                audio_data = np.frombuffer(data, dtype=np.int16)
+                resampled = self._resampler.resample(audio_data)
+                raw = resampled.tobytes()
+            else:
+                raw = bytes(data)
+
             self._broadcast.push(raw)

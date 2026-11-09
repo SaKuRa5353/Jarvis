@@ -7,6 +7,7 @@ torchaudio>=2.0.0           # для Silero TTS
 # ─── Обработка звука ───
 sounddevice>=0.4.6          # захват/воспроизведение
 numpy>=1.24.0               # массивы для VAD
+scipy>=1.11.0               # потоковый ресемплинг через scipy.signal.resample_poly
 
 # ─── VAD ───
 onnxruntime>=1.16.0         # Silero VAD

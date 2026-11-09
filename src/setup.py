@@ -1,7 +1,7 @@
 """Мастер настройки микрофона: python main.py --setup
 
 Показывает только пригодные устройства ввода (реальные карты, без ALSA-виртуалов
-и HDMI без входа), пишет выбор в .env как JARVIS_DEVICE и предлагает тестовую
+и HDMI без входа), пишет устойчивое имя устройства в .env и предлагает тестовую
 запись 3 секунды с пиковой амплитудой.
 
 Зачем: DEVICE был захардкожен как 4 в config.py и отдельным литералом
@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 
 ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
-ENV_KEY = "JARVIS_DEVICE"
+ENV_KEYS = ("JARVIS_DEVICE_NAME", "JARVIS_HOSTAPI", "JARVIS_DEVICE")
 
 # ALSA-виртуалы и агрегаторы: их в списке sounddevice больше десятка, толку нет.
 _SKIP_NAMES = {
@@ -23,11 +23,11 @@ _SKIP_NAMES = {
 }
 
 
-def list_input_devices() -> list[tuple[int, str, int]]:
-    """(индекс, имя, число входов) — только устройства с микрофонным входом."""
+def list_input_devices() -> list[tuple[int, str, int, str]]:
+    """(индекс, имя, число входов, host API) — только устройства ввода."""
     import sounddevice as sd
 
-    out: list[tuple[int, str, int]] = []
+    out: list[tuple[int, str, int, str]] = []
     for i, d in enumerate(sd.query_devices()):
         if int(d.get("max_input_channels", 0)) <= 0:
             continue
@@ -35,25 +35,38 @@ def list_input_devices() -> list[tuple[int, str, int]]:
         base = name.split(":")[0].strip().lower()
         if base in _SKIP_NAMES or name.strip().lower() in _SKIP_NAMES:
             continue
-        out.append((i, name, int(d["max_input_channels"])))
+        hostapi = d.get("hostapi")
+        hostapi_name = str(hostapi)
+        if isinstance(hostapi, int):
+            hostapis = sd.query_hostapis()
+            if 0 <= hostapi < len(hostapis):
+                hostapi_name = str(hostapis[hostapi].get("name", hostapi))
+        out.append((i, name, int(d["max_input_channels"]), hostapi_name))
     return out
 
 
 def _print_devices(devs: list[tuple[int, str, int]]) -> None:
     print("\nПригодные устройства ввода:\n")
-    for idx, name, ch in devs:
-        print(f"  [{idx:>2}] {name}  ({ch} in)")
+    for idx, name, ch, hostapi in devs:
+        print(f"  [{idx:>2}] {name}  ({ch} in, {hostapi})")
     print()
 
 
-def _write_env(device: int) -> None:
+def _write_env(device: int, name: str, hostapi: str) -> None:
     lines: list[str] = []
     if ENV_FILE.exists():
         lines = ENV_FILE.read_text(encoding="utf-8").splitlines()
-    lines = [ln for ln in lines if not ln.strip().startswith(f"{ENV_KEY}=")]
-    lines.append(f"{ENV_KEY}={device}")
+    lines = [
+        ln for ln in lines
+        if not any(ln.strip().startswith(f"{key}=") for key in ENV_KEYS)
+    ]
+    lines.extend([
+        f"JARVIS_DEVICE_NAME={name}",
+        f"JARVIS_HOSTAPI={hostapi}",
+        f"JARVIS_DEVICE={device}",
+    ])
     ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"\n✅ {ENV_KEY}={device} записан в {ENV_FILE}")
+    print(f"\n✅ Имя устройства и host API записаны в {ENV_FILE}")
     print("   (.env уже в .gitignore — в репозиторий не попадёт)")
 
 
@@ -104,10 +117,10 @@ def run_setup(list_only: bool = False) -> int:
     except Exception:
         current = None
 
-    valid = {str(i) for i, _, _ in devs}
+    valid = {str(i) for i, _, _, _ in devs}
     raw = input("Номер микрофона (Enter = оставить текущий): ").strip()
     if not raw:
-        if current is None:
+        if current is None or current < 0:
             print("Текущего значения нет — укажите номер.")
             return 1
         print(f"Оставляем DEVICE={current}")
@@ -117,7 +130,8 @@ def run_setup(list_only: bool = False) -> int:
         return 1
     else:
         chosen = int(raw)
-        _write_env(chosen)
+        name, hostapi = next((name, hostapi) for i, name, _, hostapi in devs if i == chosen)
+        _write_env(chosen, name, hostapi)
 
     if input("\nПроверить запись 3 секунды? [Y/n] ").strip().lower() in ("", "y", "д"):
         _record_test(chosen)

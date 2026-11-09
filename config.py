@@ -6,7 +6,8 @@
 import os
 from pathlib import Path
 
-# .env рядом с проектом: JARVIS_DEVICE, JARVIS_LOG_LEVEL, JARVIS_LOG_DIR.
+# .env рядом с проектом: JARVIS_DEVICE_NAME, JARVIS_HOSTAPI, JARVIS_DEVICE,
+# JARVIS_LOG_LEVEL, JARVIS_LOG_DIR.
 # Файл в .gitignore — значения у каждого свои. Создать: python main.py --setup
 try:
     from dotenv import load_dotenv
@@ -33,9 +34,12 @@ def _env_int(name: str, default: int) -> int:
 # Один InputStream -> буфер -> потребители (wakeword / VAD).
 
 SAMPLE_RATE = 16000
-# Захардкод был здесь. Теперь: .env -> JARVIS_DEVICE, fallback 4.
-# Перенастроить микрофон:  python main.py --setup
-DEVICE = _env_int("JARVIS_DEVICE", 4)
+# Имя устройства устойчивее числового индекса: индекс меняется после
+# переподключения USB-карты. Если имя не задано, используется legacy-индекс,
+# а при его отсутствии — системный default input.
+DEVICE_NAME = os.getenv("JARVIS_DEVICE_NAME", "").strip() or None
+HOSTAPI = os.getenv("JARVIS_HOSTAPI", "").strip() or None
+DEVICE = _env_int("JARVIS_DEVICE", -1)
 AUDIO_BLOCK_SIZE = 1280             # 80 мс при 16 kHz
 AUDIO_BUFFER_SEC = 10               # сколько секунд аудио держать в буфере
 
